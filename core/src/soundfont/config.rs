@@ -1,6 +1,10 @@
 /// Type of the audio sample interpolation algorithm.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(rename_all = "snake_case")
+)]
 pub enum Interpolator {
     /// Nearest neighbor interpolation
     ///
@@ -15,7 +19,11 @@ pub enum Interpolator {
 
 /// Type of curve to be used in certain envelope stages.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(rename_all = "snake_case")
+)]
 pub enum EnvelopeCurveType {
     /// Apply a linear curve to the envelope stage.
     /// This option is supported by the attack, decay and release stages.
