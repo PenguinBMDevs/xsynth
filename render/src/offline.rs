@@ -1,17 +1,13 @@
-use std::{
-    io::BufWriter,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{io::BufWriter, path::PathBuf, sync::Arc};
 
 use hound::{SampleFormat, WavSpec, WavWriter};
 use thiserror::Error;
 use xsynth_core::{
-    AudioPipe, AudioStreamParams,
     channel::{ChannelConfigEvent, ChannelEvent},
     channel_group::{ChannelGroup, ChannelGroupConfig, SynthEvent},
     effects::VolumeLimiter,
     soundfont::SoundfontBase,
+    AudioPipe, AudioStreamParams,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -99,8 +95,8 @@ impl OfflineWavRenderer {
             return Ok(());
         }
 
-        let samples =
-            self.config.group_options.audio_params.sample_rate as f64 * event_time + self.missed_samples;
+        let samples = self.config.group_options.audio_params.sample_rate as f64 * event_time
+            + self.missed_samples;
         self.missed_samples = samples % 1.0;
         let sample_count =
             samples as usize * self.config.group_options.audio_params.channels.count() as usize;
