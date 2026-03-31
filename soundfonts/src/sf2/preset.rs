@@ -137,59 +137,81 @@ impl Sf2ParsedPreset {
             }
 
             // Second pass -> Stereo sample linking
-            // This is kinda hacky, there has to be a better way to do this
-            // I hate this code
+            // Build index for O(1) stereo pair lookup
+            use std::collections::HashMap;
+            let mut stereo_pairs: HashMap<(i8, i16, u8, u8, u8, u8), Vec<usize>> =
+                HashMap::new();
+            for (i, (region, sample)) in regions.iter().enumerate() {
+                if sample.link_type.abs() == 1 && region.pan.abs() == 500 {
+                    stereo_pairs
+                        .entry((
+                            sample.link_type,
+                            region.pan,
+                            region.root_key,
+                            *region.keyrange.start(),
+                            *region.keyrange.end(),
+                            *region.velrange.start(),
+                        ))
+                        .or_default()
+                        .push(i);
+                }
+            }
+
             let mut ignored_idx = Vec::new();
-            for (i, region) in regions.clone().into_iter().enumerate() {
+            for (i, (region, sample)) in regions.iter().enumerate() {
                 if ignored_idx.contains(&i) {
                     continue;
                 }
-                if region.1.link_type.abs() == 1 {
-                    if region.0.pan.abs() == 500 {
-                        match regions
-                            .clone()
-                            .into_iter()
-                            .position(|v: (Sf2Region, Sf2Sample)| {
-                                let v1 = v.0.clone();
-                                let v2 = region.0.clone();
-                                v.1.link_type == -region.1.link_type
-                                    && v1.pan == -v2.pan
-                                    && v1.root_key == v2.root_key
-                                    && v1.keyrange == v2.keyrange
-                                    && v1.velrange == v2.velrange
-                            }) {
-                            Some(reg) => {
-                                let sample_match = regions[reg].1.clone();
-                                let mut new_region = region.0.clone();
-                                match region.1.link_type {
-                                    -1 => {
-                                        new_region.sample = Arc::new([
-                                            region.1.data.clone(),
-                                            sample_match.data.clone(),
-                                        ])
-                                    }
-                                    1 => {
-                                        new_region.sample = Arc::new([
-                                            sample_match.data.clone(),
-                                            region.1.data.clone(),
-                                        ])
-                                    }
-                                    _ => {}
+                if sample.link_type.abs() == 1 {
+                    if region.pan.abs() == 500 {
+                        // Look up matching pair using index
+                        let match_indices = stereo_pairs.get(&(
+                            -sample.link_type,
+                            -region.pan,
+                            region.root_key,
+                            *region.keyrange.start(),
+                            *region.keyrange.end(),
+                            *region.velrange.start(),
+                        ));
+
+                        let found = match_indices
+                            .and_then(|indices| {
+                                indices
+                                    .iter()
+                                    .find(|&&idx| idx > i && !ignored_idx.contains(&idx))
+                                    .copied()
+                            });
+
+                        if let Some(reg) = found {
+                            let sample_match = &regions[reg].1;
+                            let mut new_region = region.clone();
+                            match sample.link_type {
+                                -1 => {
+                                    new_region.sample = Arc::new([
+                                        sample.data.clone(),
+                                        sample_match.data.clone(),
+                                    ])
                                 }
-                                new_region.pan = 0;
-                                new_preset.regions.push(new_region);
-                                ignored_idx.push(reg);
+                                1 => {
+                                    new_region.sample = Arc::new([
+                                        sample_match.data.clone(),
+                                        sample.data.clone(),
+                                    ])
+                                }
+                                _ => {}
                             }
-                            None => {
-                                let mut new_region = region.0.clone();
-                                new_region.sample = Arc::new([region.1.data.clone()]);
-                                new_preset.regions.push(new_region);
-                            }
+                            new_region.pan = 0;
+                            new_preset.regions.push(new_region);
+                            ignored_idx.push(reg);
+                        } else {
+                            let mut new_region = region.clone();
+                            new_region.sample = Arc::new([sample.data.clone()]);
+                            new_preset.regions.push(new_region);
                         }
                     }
                 } else {
-                    let mut new_region = region.0.clone();
-                    new_region.sample = Arc::new([region.1.data.clone()]);
+                    let mut new_region = region.clone();
+                    new_region.sample = Arc::new([sample.data.clone()]);
                     new_preset.regions.push(new_region);
                 }
             }
