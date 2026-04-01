@@ -69,7 +69,7 @@ impl VoiceBuffer {
 
         let mut quietest_vel = u8::MAX;
         let mut quietest_id = None;
-        
+
         for voice in &self.voices {
             if voice.id == ignored_id || voice.is_killed() {
                 continue;
@@ -113,10 +113,7 @@ impl VoiceBuffer {
     }
 
     #[inline(always)]
-    pub fn push_voices(
-        &mut self,
-        voices: impl Iterator<Item = Box<dyn Voice>>,
-    ) {
+    pub fn push_voices(&mut self, voices: impl Iterator<Item = Box<dyn Voice>>) {
         let id = self.get_id();
 
         for voice in voices {
@@ -196,7 +193,7 @@ impl VoiceBuffer {
                 i += 1;
             }
         }
-        
+
         // Always clear held_by_damper to avoid O(n*m) complexity
         // This is the fastest approach for high voice counts
         if !self.held_by_damper.is_empty() {
