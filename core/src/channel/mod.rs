@@ -77,8 +77,9 @@ impl Key {
 }
 
 struct ControlEventData {
-    selected_lsb: i8,
-    selected_msb: i8,
+    selected_lsb: Option<u8>,
+    selected_msb: Option<u8>,
+    is_nrpn: bool,
     pitch_bend_sensitivity_lsb: u8,
     pitch_bend_sensitivity_msb: u8,
     pitch_bend_sensitivity: f32,
@@ -97,8 +98,9 @@ struct ControlEventData {
 impl ControlEventData {
     pub fn new_defaults(sample_rate: u32) -> Self {
         ControlEventData {
-            selected_lsb: -1,
-            selected_msb: -1,
+            selected_lsb: None,
+            selected_msb: None,
+            is_nrpn: false,
             pitch_bend_sensitivity_lsb: 0,
             pitch_bend_sensitivity_msb: 2,
             pitch_bend_sensitivity: 2.0,
@@ -241,7 +243,7 @@ impl VoiceChannel {
                 let vol = control.volume.get_next() * control.expression.get_next();
                 // Use a gentler cubic curve to prevent sudden volume jumps
                 let vol = vol * vol * vol;
-                
+
                 // Pan with constant power panning law for smooth stereo image
                 let pan = control.pan.get_next().clamp(0.0, 1.0);
                 let pan_angle = pan * std::f32::consts::PI / 2.0;
@@ -279,8 +281,7 @@ impl VoiceChannel {
                 pool.install(|| {
                     key_voices.par_iter_mut().for_each(move |key| {
                         for e in key.event_cache.drain(..) {
-                            key.data
-                                .send_event(e, control_data, &params.channel_sf);
+                            key.data.send_event(e, control_data, &params.channel_sf);
                         }
 
                         fast_zero_fill(&mut key.audio_cache, len);
@@ -298,11 +299,8 @@ impl VoiceChannel {
             None => {
                 for key in self.key_voices.iter_mut() {
                     for e in key.event_cache.drain(..) {
-                        key.data.send_event(
-                            e,
-                            &self.voice_control_data,
-                            &self.params.channel_sf,
-                        );
+                        key.data
+                            .send_event(e, &self.voice_control_data, &self.params.channel_sf);
                     }
 
                     key.data.render_to(out);
@@ -328,17 +326,32 @@ impl VoiceChannel {
                     // Bank select
                     self.params.set_bank(value);
                 }
+                0x62 => {
+                    self.control_event_data.selected_lsb = Some(value);
+                    self.control_event_data.is_nrpn = true;
+                }
+                0x63 => {
+                    self.control_event_data.selected_msb = Some(value);
+                    self.control_event_data.is_nrpn = true;
+                }
                 0x64 => {
-                    self.control_event_data.selected_lsb = value as i8;
+                    self.control_event_data.selected_lsb = Some(value);
+                    self.control_event_data.is_nrpn = false;
                 }
                 0x65 => {
-                    self.control_event_data.selected_msb = value as i8;
+                    self.control_event_data.selected_msb = Some(value);
+                    self.control_event_data.is_nrpn = false;
                 }
                 0x06 | 0x26 => {
-                    let (lsb, msb) = {
-                        let data = &self.control_event_data;
-                        (data.selected_lsb, data.selected_msb)
-                    };
+                    let data = &self.control_event_data;
+                    if data.is_nrpn {
+                        // NRPN currently unsupported but properly parsed
+                        return;
+                    }
+
+                    let lsb = data.selected_lsb.unwrap_or(127);
+                    let msb = data.selected_msb.unwrap_or(127);
+
                     if msb == 0 {
                         match lsb {
                             0 => {
@@ -371,9 +384,9 @@ impl VoiceChannel {
                                     _ => (),
                                 }
                                 let val: u16 = ((self.control_event_data.fine_tune_msb as u16)
-                                    << 6)
-                                    + self.control_event_data.fine_tune_lsb as u16;
-                                let val = (val as f32 - 4096.0) / 4096.0 * 100.0;
+                                    << 7)
+                                    | self.control_event_data.fine_tune_lsb as u16;
+                                let val = (val as f32 - 8192.0) / 8192.0 * 100.0;
                                 self.process_control_event(ControlEvent::FineTune(val));
                             }
                             2 => {
