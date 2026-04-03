@@ -114,7 +114,30 @@ pub(crate) fn convert_config_event(event: u16, params: u32) -> Result<ChannelEve
 }
 
 pub(crate) unsafe fn sfids_to_vec(handles: &[XSynth_Soundfont]) -> Vec<Arc<dyn SoundfontBase>> {
-    handles.iter().map(|handle| handle.clone()).collect()
+    handles
+        .iter()
+        .filter_map(|handle| handle.try_clone())
+        .collect()
+}
+
+pub(crate) unsafe fn ptr_to_slice<'a, T>(ptr: *const T, count: u64) -> Option<&'a [T]> {
+    if count == 0 {
+        return Some(&[]);
+    }
+    if ptr.is_null() {
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts(ptr, count as usize) })
+}
+
+pub(crate) unsafe fn ptr_to_slice_mut<'a, T>(ptr: *mut T, count: u64) -> Option<&'a mut [T]> {
+    if count == 0 {
+        return Some(&mut []);
+    }
+    if ptr.is_null() {
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts_mut(ptr, count as usize) })
 }
 
 fn convert_layers(layers: u32) -> Option<usize> {

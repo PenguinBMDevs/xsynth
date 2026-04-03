@@ -104,9 +104,11 @@ pub unsafe extern "C" fn XSynth_Soundfont_LoadNew(
     options: XSynth_SoundfontOptions,
 ) -> XSynth_Soundfont {
     unsafe {
-        let nullsf = XSynth_Soundfont {
-            soundfont: std::ptr::null_mut(),
-        };
+        let nullsf = XSynth_Soundfont::null();
+
+        if path.is_null() {
+            return nullsf;
+        }
 
         let path = match CStr::from_ptr(path).to_str() {
             Ok(path) => path,
@@ -117,7 +119,10 @@ pub unsafe extern "C" fn XSynth_Soundfont_LoadNew(
         let sfinit = SoundfontInitOptions {
             bank: convert_program_value(options.bank.clamp(-1, 128)),
             preset: convert_program_value(options.preset.clamp(-1, 127)),
-            vol_envelope_options: convert_envelope_to_rust(options.vol_envelope_options).unwrap(),
+            vol_envelope_options: match convert_envelope_to_rust(options.vol_envelope_options) {
+                Ok(options) => options,
+                Err(..) => return nullsf,
+            },
             use_effects: options.use_effects,
             interpolator: match options.interpolator {
                 XSYNTH_INTERPOLATION_LINEAR => Interpolator::Linear,
@@ -153,5 +158,5 @@ pub unsafe extern "C" fn XSynth_Soundfont_LoadNew(
 /// - handle: The handle of the soundfont
 #[no_mangle]
 pub extern "C" fn XSynth_Soundfont_Remove(handle: XSynth_Soundfont) {
-    handle.drop();
+    handle.try_drop();
 }

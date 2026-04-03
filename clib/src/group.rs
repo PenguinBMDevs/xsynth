@@ -1,4 +1,5 @@
 use crate::{handles::*, utils::*, XSynth_GenDefault_StreamParams, XSynth_StreamParams};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use xsynth_core::{
     channel::{ChannelConfigEvent, ChannelEvent, ChannelInitOptions},
     channel_group::{ChannelGroup, ChannelGroupConfig, SynthEvent},
@@ -87,8 +88,10 @@ pub extern "C" fn XSynth_ChannelGroup_Create(options: XSynth_GroupOptions) -> XS
         parallelism: convert_parallelism_to_rust(options.parallelism),
     };
 
-    let new = ChannelGroup::new(config);
-    XSynth_ChannelGroup::from(new)
+    match catch_unwind(AssertUnwindSafe(|| ChannelGroup::new(config))) {
+        Ok(new) => XSynth_ChannelGroup::from(new),
+        Err(_) => XSynth_ChannelGroup::null(),
+    }
 }
 
 /// Sends an audio event to a specific channel of the desired channel group.
@@ -126,7 +129,11 @@ pub extern "C" fn XSynth_ChannelGroup_SendAudioEvent(
     params: u16,
 ) {
     if let Ok(ev) = convert_audio_event(event, params) {
-        handle.as_mut().send_event(SynthEvent::Channel(channel, ev));
+        unsafe {
+            handle
+                .as_mut_unchecked()
+                .send_event(SynthEvent::Channel(channel, ev));
+        }
     }
 }
 
@@ -144,7 +151,9 @@ pub extern "C" fn XSynth_ChannelGroup_SendAudioEventAll(
     params: u16,
 ) {
     if let Ok(ev) = convert_audio_event(event, params) {
-        handle.as_mut().send_event(SynthEvent::AllChannels(ev));
+        unsafe {
+            handle.as_mut_unchecked().send_event(SynthEvent::AllChannels(ev));
+        }
     }
 }
 
@@ -172,7 +181,11 @@ pub extern "C" fn XSynth_ChannelGroup_SendConfigEvent(
     params: u32,
 ) {
     if let Ok(ev) = convert_config_event(event, params) {
-        handle.as_mut().send_event(SynthEvent::Channel(channel, ev));
+        unsafe {
+            handle
+                .as_mut_unchecked()
+                .send_event(SynthEvent::Channel(channel, ev));
+        }
     }
 }
 
@@ -190,7 +203,9 @@ pub extern "C" fn XSynth_ChannelGroup_SendConfigEventAll(
     params: u32,
 ) {
     if let Ok(ev) = convert_config_event(event, params) {
-        handle.as_mut().send_event(SynthEvent::AllChannels(ev));
+        unsafe {
+            handle.as_mut_unchecked().send_event(SynthEvent::AllChannels(ev));
+        }
     }
 }
 
@@ -208,13 +223,16 @@ pub unsafe extern "C" fn XSynth_ChannelGroup_SetSoundfonts(
     count: u64,
 ) {
     unsafe {
-        let ids = std::slice::from_raw_parts(sf_ids, count as usize);
+        let Some(group) = handle.try_as_mut() else {
+            return;
+        };
+        let Some(ids) = ptr_to_slice(sf_ids, count) else {
+            return;
+        };
         let sfvec = sfids_to_vec(ids);
-        handle
-            .as_mut()
-            .send_event(SynthEvent::AllChannels(ChannelEvent::Config(
-                ChannelConfigEvent::SetSoundfonts(sfvec),
-            )));
+        group.send_event(SynthEvent::AllChannels(ChannelEvent::Config(
+            ChannelConfigEvent::SetSoundfonts(sfvec),
+        )));
     }
 }
 
@@ -224,11 +242,11 @@ pub unsafe extern "C" fn XSynth_ChannelGroup_SetSoundfonts(
 /// - handle: The handle of the channel group instance
 #[no_mangle]
 pub extern "C" fn XSynth_ChannelGroup_ClearSoundfonts(handle: XSynth_ChannelGroup) {
-    handle
-        .as_mut()
-        .send_event(SynthEvent::AllChannels(ChannelEvent::Config(
+    if let Some(group) = handle.try_as_mut() {
+        group.send_event(SynthEvent::AllChannels(ChannelEvent::Config(
             ChannelConfigEvent::SetSoundfonts(Vec::new()),
         )));
+    }
 }
 
 /// Reads audio samples from the desired channel group. The amount of samples
@@ -251,12 +269,13 @@ pub unsafe extern "C" fn XSynth_ChannelGroup_ReadSamples(
     length: u64,
 ) {
     unsafe {
-        if buffer.is_null() {
+        let Some(group) = handle.try_as_mut() else {
             return;
-        }
-
-        let slc = std::slice::from_raw_parts_mut(buffer, length as usize);
-        handle.as_mut().read_samples(slc);
+        };
+        let Some(slc) = ptr_to_slice_mut(buffer, length) else {
+            return;
+        };
+        group.read_samples(slc);
     }
 }
 
@@ -269,7 +288,7 @@ pub unsafe extern "C" fn XSynth_ChannelGroup_ReadSamples(
 /// The active voice count as a 64bit unsigned integer
 #[no_mangle]
 pub extern "C" fn XSynth_ChannelGroup_VoiceCount(handle: XSynth_ChannelGroup) -> u64 {
-    handle.as_ref().voice_count()
+    handle.try_as_ref().map_or(0, |group| group.voice_count())
 }
 
 /// Returns the audio stream parameters of the desired channel group as an
@@ -285,7 +304,11 @@ pub extern "C" fn XSynth_ChannelGroup_VoiceCount(handle: XSynth_ChannelGroup) ->
 pub extern "C" fn XSynth_ChannelGroup_GetStreamParams(
     handle: XSynth_ChannelGroup,
 ) -> XSynth_StreamParams {
-    convert_streamparams_to_c(handle.as_ref().stream_params())
+    handle
+        .try_as_ref()
+        .map_or_else(|| XSynth_GenDefault_StreamParams(), |group| {
+            convert_streamparams_to_c(group.stream_params())
+        })
 }
 
 /// Drops the desired channel group.
@@ -294,5 +317,5 @@ pub extern "C" fn XSynth_ChannelGroup_GetStreamParams(
 /// - handle: The handle of the channel group instance
 #[no_mangle]
 pub extern "C" fn XSynth_ChannelGroup_Drop(handle: XSynth_ChannelGroup) {
-    handle.drop();
+    handle.try_drop();
 }

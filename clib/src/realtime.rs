@@ -1,4 +1,5 @@
 use crate::{handles::*, utils::*, XSynth_ByteRange, XSynth_StreamParams};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use xsynth_core::{
     channel::{ChannelConfigEvent, ChannelEvent, ChannelInitOptions},
     channel_group::SynthEvent,
@@ -80,8 +81,10 @@ pub extern "C" fn XSynth_Realtime_Create(config: XSynth_RealtimeConfig) -> XSynt
         ignore_range: config.ignore_range.start..=config.ignore_range.end,
     };
 
-    let new = RealtimeSynth::open_with_default_output(options);
-    XSynth_RealtimeSynth::from(new)
+    match catch_unwind(AssertUnwindSafe(|| RealtimeSynth::open_with_default_output(options))) {
+        Ok(new) => XSynth_RealtimeSynth::from(new),
+        Err(_) => XSynth_RealtimeSynth::null(),
+    }
 }
 
 /// Sends an audio event to a specific channel of the desired realtime synth instance.
@@ -101,7 +104,11 @@ pub extern "C" fn XSynth_Realtime_SendAudioEvent(
     params: u16,
 ) {
     if let Ok(ev) = convert_audio_event(event, params) {
-        handle.as_mut().send_event(SynthEvent::Channel(channel, ev));
+        unsafe {
+            handle
+                .as_mut_unchecked()
+                .send_event(SynthEvent::Channel(channel, ev));
+        }
     }
 }
 
@@ -119,7 +126,11 @@ pub extern "C" fn XSynth_Realtime_SendAudioEventAll(
     params: u16,
 ) {
     if let Ok(ev) = convert_audio_event(event, params) {
-        handle.as_mut().send_event(SynthEvent::AllChannels(ev));
+        unsafe {
+            handle
+                .as_mut_unchecked()
+                .send_event(SynthEvent::AllChannels(ev));
+        }
     }
 }
 
@@ -141,7 +152,11 @@ pub extern "C" fn XSynth_Realtime_SendConfigEvent(
     params: u32,
 ) {
     if let Ok(ev) = convert_config_event(event, params) {
-        handle.as_mut().send_event(SynthEvent::Channel(channel, ev));
+        unsafe {
+            handle
+                .as_mut_unchecked()
+                .send_event(SynthEvent::Channel(channel, ev));
+        }
     }
 }
 
@@ -159,7 +174,11 @@ pub extern "C" fn XSynth_Realtime_SendConfigEventAll(
     params: u32,
 ) {
     if let Ok(ev) = convert_config_event(event, params) {
-        handle.as_mut().send_event(SynthEvent::AllChannels(ev));
+        unsafe {
+            handle
+                .as_mut_unchecked()
+                .send_event(SynthEvent::AllChannels(ev));
+        }
     }
 }
 
@@ -170,7 +189,9 @@ pub extern "C" fn XSynth_Realtime_SendConfigEventAll(
 /// - render_window_ms: The length of the buffer reader in ms
 #[no_mangle]
 pub extern "C" fn XSynth_Realtime_SetBuffer(handle: XSynth_RealtimeSynth, render_window_ms: f64) {
-    handle.as_ref().set_buffer(render_window_ms);
+    if let Some(synth) = handle.try_as_ref() {
+        synth.set_buffer(render_window_ms);
+    }
 }
 
 /// Sets the range of velocities that will be ignored.
@@ -183,10 +204,11 @@ pub extern "C" fn XSynth_Realtime_SetIgnoreRange(
     handle: XSynth_RealtimeSynth,
     ignore_range: XSynth_ByteRange,
 ) {
-    handle
-        .as_mut()
-        .get_sender_mut()
-        .set_ignore_range(ignore_range.start..=ignore_range.end);
+    if let Some(synth) = handle.try_as_mut() {
+        synth
+            .get_sender_mut()
+            .set_ignore_range(ignore_range.start..=ignore_range.end);
+    }
 }
 
 /// Sets a list of soundfonts to be used in the specified realtime synth
@@ -204,13 +226,16 @@ pub unsafe extern "C" fn XSynth_Realtime_SetSoundfonts(
     count: u64,
 ) {
     unsafe {
-        let ids = std::slice::from_raw_parts(sf_ids, count as usize);
+        let Some(synth) = handle.try_as_mut() else {
+            return;
+        };
+        let Some(ids) = ptr_to_slice(sf_ids, count) else {
+            return;
+        };
         let sfvec = sfids_to_vec(ids);
-        handle
-            .as_mut()
-            .send_event(SynthEvent::AllChannels(ChannelEvent::Config(
-                ChannelConfigEvent::SetSoundfonts(sfvec),
-            )));
+        synth.send_event(SynthEvent::AllChannels(ChannelEvent::Config(
+            ChannelConfigEvent::SetSoundfonts(sfvec),
+        )));
     }
 }
 
@@ -220,11 +245,11 @@ pub unsafe extern "C" fn XSynth_Realtime_SetSoundfonts(
 /// - handle: The handle of the realtime synthesizer instance
 #[no_mangle]
 pub extern "C" fn XSynth_Realtime_ClearSoundfonts(handle: XSynth_RealtimeSynth) {
-    handle
-        .as_mut()
-        .send_event(SynthEvent::AllChannels(ChannelEvent::Config(
+    if let Some(synth) = handle.try_as_mut() {
+        synth.send_event(SynthEvent::AllChannels(ChannelEvent::Config(
             ChannelConfigEvent::SetSoundfonts(Vec::new()),
         )));
+    }
 }
 
 /// Returns the audio stream parameters of the specified realtime synth
@@ -240,7 +265,12 @@ pub extern "C" fn XSynth_Realtime_ClearSoundfonts(handle: XSynth_RealtimeSynth) 
 pub extern "C" fn XSynth_Realtime_GetStreamParams(
     handle: XSynth_RealtimeSynth,
 ) -> XSynth_StreamParams {
-    convert_streamparams_to_c(&handle.as_ref().stream_params())
+    handle
+        .try_as_ref()
+        .map_or(XSynth_StreamParams {
+            sample_rate: 0,
+            audio_channels: 0,
+        }, |synth| convert_streamparams_to_c(&synth.stream_params()))
 }
 
 /// Returns the statistics of the specified realtime synth instance.
@@ -252,12 +282,19 @@ pub extern "C" fn XSynth_Realtime_GetStreamParams(
 /// This function returns the statistic as an XSynth_RealtimeStats struct.
 #[no_mangle]
 pub extern "C" fn XSynth_Realtime_GetStats(handle: XSynth_RealtimeSynth) -> XSynth_RealtimeStats {
-    let stats = handle.as_ref().get_stats();
-
-    XSynth_RealtimeStats {
-        voice_count: stats.voice_count(),
-        buffer: stats.buffer().last_samples_after_read(),
-        render_time: stats.buffer().average_renderer_load(),
+    if let Some(synth) = handle.try_as_ref() {
+        let stats = synth.get_stats();
+        XSynth_RealtimeStats {
+            voice_count: stats.voice_count(),
+            buffer: stats.buffer().last_samples_after_read(),
+            render_time: stats.buffer().average_renderer_load(),
+        }
+    } else {
+        XSynth_RealtimeStats {
+            voice_count: 0,
+            buffer: 0,
+            render_time: 0.0,
+        }
     }
 }
 
@@ -268,7 +305,9 @@ pub extern "C" fn XSynth_Realtime_GetStats(handle: XSynth_RealtimeSynth) -> XSyn
 /// - handle: The handle of the realtime synthesizer instance
 #[no_mangle]
 pub extern "C" fn XSynth_Realtime_Reset(handle: XSynth_RealtimeSynth) {
-    handle.as_mut().get_sender_mut().reset_synth();
+    if let Some(synth) = handle.try_as_mut() {
+        synth.get_sender_mut().reset_synth();
+    }
 }
 
 /// Drops the specified realtime synth instance.
@@ -277,5 +316,5 @@ pub extern "C" fn XSynth_Realtime_Reset(handle: XSynth_RealtimeSynth) {
 /// - handle: The handle of the realtime synthesizer instance
 #[no_mangle]
 pub extern "C" fn XSynth_Realtime_Drop(handle: XSynth_RealtimeSynth) {
-    handle.drop();
+    handle.try_drop();
 }
