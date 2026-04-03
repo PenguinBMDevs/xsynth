@@ -7,9 +7,9 @@ use xsynth_core::{
 
 /// Options regarding which parts of the ChannelGroup should be multithreaded.
 /// - channel: Render the MIDI channels parallel in a threadpool with the
-///         specified thread count.
+///   specified thread count.
 /// - key: Render the individisual keys of each channel parallel in a threadpool
-///         with the specified thread count.
+///   with the specified thread count.
 ///
 /// The following apply for all the values:
 /// - A value of -1 means no multithreading.
@@ -32,12 +32,12 @@ pub extern "C" fn XSynth_GenDefault_ParallelismOptions() -> XSynth_ParallelismOp
 /// Options for initializing a ChannelGroup
 /// - stream_params: Output parameters (see XSynth_StreamParams)
 /// - channels: Number of MIDI channels. If this is set to 16 (MIDI standard),
-///         then channel 10 will be configured for percussion.
+///   then channel 10 will be configured for percussion.
 /// - fade_out_killing: If set to true, the voices killed due to the voice limit
-///         will fade out. If set to false, they will be killed immediately,
-///         usually causing clicking but improving performance.
+///   will fade out. If set to false, they will be killed immediately,
+///   usually causing clicking but improving performance.
 /// - parallelism: Options about the instance's parallelism
-///         (see XSynth_ParallelismOptions)
+///   (see XSynth_ParallelismOptions)
 #[repr(C)]
 pub struct XSynth_GroupOptions {
     pub stream_params: XSynth_StreamParams,
@@ -67,8 +67,8 @@ pub extern "C" fn XSynth_GenDefault_GroupOptions() -> XSynth_GroupOptions {
 ///
 /// --Parameters--
 /// - options: The XSynth_GroupOptions struct which holds all the necessary
-///         initialization settings for the channel group. A default configuration
-///         can be generated using the XSynth_GenDefault_GroupOptions function.
+///   initialization settings for the channel group. A default configuration
+///   can be generated using the XSynth_GenDefault_GroupOptions function.
 ///
 /// --Returns--
 /// This function will return the handle of the created channel group. This will
@@ -96,28 +96,28 @@ pub extern "C" fn XSynth_ChannelGroup_Create(options: XSynth_GroupOptions) -> XS
 /// --Parameters--
 /// - handle: The handle of the channel group instance
 /// - channel: The number of the MIDI channel to send the event to
-///         (MIDI channel 1 is 0)
+///   (MIDI channel 1 is 0)
 /// - event: The type of event to be sent (see below for available options)
 /// - params: Parameters for the event
 ///
 /// --Events--
 /// - XSYNTH_AUDIO_EVENT_NOTEON: A MIDI note on event,
-///         params: LOBYTE = key number (0-127), HIBYTE = velocity (0-127)
+///   params: LOBYTE = key number (0-127), HIBYTE = velocity (0-127)
 /// - XSYNTH_AUDIO_EVENT_NOTEOFF: A MIDI note on event
-///         params: Key number (0-127)
+///   params: Key number (0-127)
 /// - XSYNTH_AUDIO_EVENT_ALLNOTESOFF: Release all notes (No parameters)
 /// - XSYNTH_AUDIO_EVENT_ALLNOTESKILLED: Kill all notes (No parameters)
 /// - XSYNTH_AUDIO_EVENT_RESETCONTROL: Reset all control change data (No parameters)
 /// - XSYNTH_AUDIO_EVENT_CONTROL: A MIDI control change event
-///         params: LOBYTE = controller number, HIBYTE = controller value
+///   params: LOBYTE = controller number, HIBYTE = controller value
 /// - XSYNTH_AUDIO_EVENT_PROGRAMCHANGE: A MIDI program change event
-///         params: preset number
+///   params: preset number
 /// - XSYNTH_AUDIO_EVENT_PITCH: Changes the pitch wheel position
-///         params: pitch wheel position (0-16383, 8192=normal/middle)
+///   params: pitch wheel position (0-16383, 8192=normal/middle)
 /// - XSYNTH_AUDIO_EVENT_FINETUNE: Changes the fine tuning
-///         params: fine tune value in cents (0-8192, 4096=normal/middle)
+///   params: fine tune value in cents (0-8192, 4096=normal/middle)
 /// - XSYNTH_AUDIO_EVENT_COARSETUNE: Changes the coarse tuning
-///         params: coarse tune value in semitones (0-128, 64=normal/middle)
+///   params: coarse tune value in semitones (0-128, 64=normal/middle)
 #[no_mangle]
 pub extern "C" fn XSynth_ChannelGroup_SendAudioEvent(
     handle: XSynth_ChannelGroup,
@@ -135,7 +135,7 @@ pub extern "C" fn XSynth_ChannelGroup_SendAudioEvent(
 /// --Parameters--
 /// - handle: The handle of the channel group instance
 /// - event: The type of MIDI event sent (see XSynth_ChannelGroup_SendAudioEvent
-///         for available options)
+///   for available options)
 /// - params: Parameters for the event
 #[no_mangle]
 pub extern "C" fn XSynth_ChannelGroup_SendAudioEventAll(
@@ -153,17 +153,17 @@ pub extern "C" fn XSynth_ChannelGroup_SendAudioEventAll(
 /// --Parameters--
 /// - handle: The handle of the channel group instance
 /// - channel: The number of the MIDI channel to send the event to
-///         (MIDI channel 1 is 0)
+///   (MIDI channel 1 is 0)
 /// - event: The type of config event to be sent (see below for available options)
 /// - params: Parameters for the event
 ///
 /// --Events--
 /// - XSYNTH_CONFIG_SETLAYERS: Sets the layer count for the channel.
-///         params: The layer limit (0 = no limit, 1-.. = limit)
+///   params: The layer limit (0 = no limit, 1-.. = limit)
 /// - XSYNTH_CONFIG_SETPERCUSSIONMODE: Controls whether the channel will be
-///         standard or percussion.
-///         params: 1 = set the channel to only use percussion patches,
-///                 0 = set the channel to use standard patches
+///   standard or percussion.
+///   params: 1 = set the channel to only use percussion patches,
+///   0 = set the channel to use standard patches
 #[no_mangle]
 pub extern "C" fn XSynth_ChannelGroup_SendConfigEvent(
     handle: XSynth_ChannelGroup,
@@ -181,7 +181,7 @@ pub extern "C" fn XSynth_ChannelGroup_SendConfigEvent(
 /// --Parameters--
 /// - handle: The handle of the channel group instance
 /// - event: The type of config event to be sent (see
-///         XSynth_ChannelGroup_SendConfigEvent for available options)
+///   XSynth_ChannelGroup_SendConfigEvent for available options)
 /// - params: Parameters for the event
 #[no_mangle]
 pub extern "C" fn XSynth_ChannelGroup_SendConfigEventAll(
@@ -241,8 +241,8 @@ pub extern "C" fn XSynth_ChannelGroup_ClearSoundfonts(handle: XSynth_ChannelGrou
 /// --Parameters--
 /// - handle: The handle of the channel group instance
 /// - buffer: Pointer to a mutable buffer to receive the audio samples. Each
-///         item of the buffer should correspond to an audio sample of type
-///         32bit float.
+///   item of the buffer should correspond to an audio sample of type
+///   32bit float.
 /// - length: Number of samples to read in the buffer
 #[no_mangle]
 pub unsafe extern "C" fn XSynth_ChannelGroup_ReadSamples(

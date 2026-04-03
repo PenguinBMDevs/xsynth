@@ -796,6 +796,11 @@ mod tests {
             mult * from
         }
 
+        fn lerp_concave(from: f32, to: f32, fac: f32) -> f32 {
+            let mult = (1. - fac).powi(8);
+            (from - to) * mult + to
+        }
+
         simd_runtime_generate!(
             fn run() {
                 let mut vec = Vec::new();
@@ -810,6 +815,14 @@ mod tests {
                     release: 16.0,
                 };
                 let params = descriptor.to_envelope_params(1, Default::default());
+
+                assert!(matches!(
+                    params.parts[EnvelopeStage::Decay.as_usize()],
+                    EnvelopePart::LerpConcave {
+                        target,
+                        duration
+                    } if target == 0.4 && duration == 17
+                ));
 
                 let mut env = SIMDVoiceEnvelope::<S>::new(params, params, true, 1.0);
 
@@ -831,7 +844,7 @@ mod tests {
                     expected_vec.push(lerp(0.5, 1.0, i as f32 / 15.0));
                 }
                 for i in 0..17 {
-                    expected_vec.push(lerp(1.0, 0.4, i as f32 / 17.0));
+                    expected_vec.push(lerp_concave(1.0, 0.4, i as f32 / 17.0));
                 }
                 for _ in 0..16 {
                     expected_vec.push(0.4);

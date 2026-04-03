@@ -10,18 +10,18 @@ use crate::{consts::*, handles::*, utils::*, XSynth_GenDefault_StreamParams, XSy
 
 /// Options for the curves of a specific envelope.
 /// - attack_curve: Controls the type of curve of the attack envelope stage.
-///         See below for available options.
+///   See below for available options.
 /// - decay_curve: Controls the type of curve of the decay envelope stage.
-///         See below for available options.
+///   See below for available options.
 /// - release_curve: Controls the type of curve of the release envelope stage.
-///         See below for available options.
+///   See below for available options.
 ///
 /// Available options:
 /// - XSYNTH_ENVELOPE_CURVE_LINEAR: Apply a linear curve to the envelope stage.
-///         This option is supported by the attack, decay and release stages.
+///   This option is supported by the attack, decay and release stages.
 /// - XSYNTH_ENVELOPE_CURVE_EXPONENTIAL: Apply an exponential curve to the
-///         envelope stage. The decay and release stages will use a concave
-///         curve, while the attack stage will use a convex curve.
+///   envelope stage. The decay and release stages will use a concave
+///   curve, while the attack stage will use a convex curve.
 #[repr(C)]
 pub struct XSynth_EnvelopeOptions {
     pub attack_curve: u8,
@@ -46,17 +46,17 @@ pub extern "C" fn XSynth_GenDefault_EnvelopeOptions() -> XSynth_EnvelopeOptions 
 /// Options for loading a new XSynth sample soundfont.
 /// - stream_params: Output parameters (see XSynth_StreamParams)
 /// - bank: The bank number (0-128) to extract and use from the soundfont
-///         A value of -1 means to use all available banks (bank 0 for SFZ)
+///   A value of -1 means to use all available banks (bank 0 for SFZ)
 /// - preset: The preset number (0-127) to extract and use from the soundfont
-///         A value of -1 means to use all available presets (preset 0 for SFZ)
+///   A value of -1 means to use all available presets (preset 0 for SFZ)
 /// - vol_envelope_options: Configures the volume envelope curves in dB units.
-///         (see XSynth_EnvelopeOptions)
+///   (see XSynth_EnvelopeOptions)
 /// - use_effects: Whether or not to apply audio effects to the soundfont. Currently
-///         only affecting the use of the cutoff filter. Setting to false may
-///         improve performance slightly.
+///   only affecting the use of the cutoff filter. Setting to false may
+///   improve performance slightly.
 /// - interpolator: The type of interpolator to use for the new soundfont
-///         Available values: INTERPOLATION_NEAREST (Nearest Neighbor interpolation),
-///                           INTERPOLATION_LINEAR (Linear interpolation)
+///   Available values: INTERPOLATION_NEAREST (Nearest Neighbor interpolation),
+///   INTERPOLATION_LINEAR (Linear interpolation)
 #[repr(C)]
 pub struct XSynth_SoundfontOptions {
     pub stream_params: XSynth_StreamParams,
@@ -92,7 +92,7 @@ pub extern "C" fn XSynth_GenDefault_SoundfontOptions() -> XSynth_SoundfontOption
 /// --Parameters--
 /// - path: The path of the soundfont to be loaded
 /// - options: The soundfont initialization options
-///         (XSynth_SoundfontOptions struct)
+///   (XSynth_SoundfontOptions struct)
 ///
 /// --Returns--
 /// This function returns the handle of the loaded soundfont, which can be used

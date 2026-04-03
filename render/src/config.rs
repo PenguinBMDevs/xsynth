@@ -156,7 +156,7 @@ impl State {
                 bank: None,
                 preset: None,
                 vol_envelope_options: if matches
-                    .get_one("linear release")
+                    .get_one("linear envelope")
                     .copied()
                     .unwrap_or_default()
                 {

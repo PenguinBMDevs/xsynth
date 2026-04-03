@@ -1,7 +1,10 @@
 use std::{
     collections::VecDeque,
     ops::RangeInclusive,
-    sync::{Arc, RwLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -27,14 +30,14 @@ struct RoughNpsTracker {
     windows: VecDeque<NpsWindow>,
     total_window_sum: u64,
     current_window_sum: u64,
-    stop: Arc<RwLock<bool>>,
+    stop: Arc<AtomicBool>,
     join_handle: Option<JoinHandle<()>>,
 }
 
 impl RoughNpsTracker {
     pub fn new() -> RoughNpsTracker {
         let rough_time = Arc::new(ReadWriteAtomicU64::new(0));
-        let stop = Arc::new(RwLock::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
 
         let join_handle = {
             let rough_time = rough_time.clone();
@@ -44,7 +47,7 @@ impl RoughNpsTracker {
                 .spawn(move || {
                     let mut last_time = 0;
                     let mut now = Instant::now();
-                    while !*stop.read().unwrap() {
+                    while !stop.load(Ordering::Acquire) {
                         thread::sleep(Duration::from_millis(NPS_WINDOW_MILLISECONDS));
                         let diff = now.elapsed();
                         last_time += diff.as_millis() as u64;
@@ -70,7 +73,7 @@ impl RoughNpsTracker {
         self.check_time();
 
         loop {
-            let cutoff = self.last_time - 1000;
+            let cutoff = self.last_time.saturating_sub(1000);
             if let Some(window) = self.windows.front() {
                 if window.time < cutoff {
                     self.total_window_sum -= window.notes;
@@ -109,7 +112,7 @@ impl RoughNpsTracker {
 
 impl Drop for RoughNpsTracker {
     fn drop(&mut self) {
-        *self.stop.write().unwrap() = true;
+        self.stop.store(true, Ordering::Release);
         self.join_handle.take().unwrap().join().unwrap();
     }
 }
@@ -334,5 +337,77 @@ impl RealtimeEventSender {
         for sender in self.senders.iter_mut() {
             sender.set_ignore_range(ignore_range.clone());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, thread};
+
+    use crossbeam_channel::unbounded;
+    use xsynth_core::channel::{ChannelAudioEvent, ChannelEvent};
+
+    use super::RealtimeEventSender;
+    use crate::{util::ReadWriteAtomicU64, SynthEvent};
+
+    #[test]
+    fn cloned_sender_can_be_sent_to_another_thread() {
+        let (tx, rx) = unbounded();
+        let max_nps = Arc::new(ReadWriteAtomicU64::new(10_000));
+        let sender = RealtimeEventSender::new(vec![tx], max_nps, 0..=0);
+
+        let mut sender_thread = sender.clone();
+        thread::spawn(move || {
+            sender_thread.send_event(SynthEvent::Channel(
+                0,
+                ChannelEvent::Audio(ChannelAudioEvent::NoteOn { key: 64, vel: 127 }),
+            ));
+        })
+        .join()
+        .unwrap();
+
+        assert!(matches!(
+            rx.recv().unwrap(),
+            ChannelEvent::Audio(ChannelAudioEvent::NoteOn { key: 64, vel: 127 })
+        ));
+    }
+
+    #[test]
+    fn reset_clears_skipped_notes_state() {
+        let (tx, rx) = unbounded();
+        let max_nps = Arc::new(ReadWriteAtomicU64::new(0));
+        let mut sender = RealtimeEventSender::new(vec![tx], max_nps, 0..=0);
+
+        sender.send_event(SynthEvent::Channel(
+            0,
+            ChannelEvent::Audio(ChannelAudioEvent::NoteOn { key: 60, vel: 100 }),
+        ));
+        sender.send_event(SynthEvent::Channel(
+            0,
+            ChannelEvent::Audio(ChannelAudioEvent::NoteOff { key: 60 }),
+        ));
+
+        assert!(rx.is_empty());
+
+        sender.reset_synth();
+
+        assert!(matches!(
+            rx.recv().unwrap(),
+            ChannelEvent::Audio(ChannelAudioEvent::AllNotesKilled)
+        ));
+        assert!(matches!(
+            rx.recv().unwrap(),
+            ChannelEvent::Audio(ChannelAudioEvent::ResetControl)
+        ));
+
+        sender.send_event(SynthEvent::Channel(
+            0,
+            ChannelEvent::Audio(ChannelAudioEvent::NoteOff { key: 60 }),
+        ));
+
+        assert!(matches!(
+            rx.recv().unwrap(),
+            ChannelEvent::Audio(ChannelAudioEvent::NoteOff { key: 60 })
+        ));
     }
 }

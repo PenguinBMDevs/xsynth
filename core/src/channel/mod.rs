@@ -184,8 +184,8 @@ impl VoiceChannel {
     /// - `options`: Channel configuration
     /// - `stream_params`: Parameters of the output audio
     /// - `threadpool`: The thread-pool that will be used to render the individual
-    ///         keys' voices concurrently. If None is used, the voices will be
-    ///         rendered on the same thread.
+    ///   keys' voices concurrently. If None is used, the voices will be
+    ///   rendered on the same thread.
     pub fn new(
         options: ChannelInitOptions,
         stream_params: AudioStreamParams,
@@ -369,14 +369,13 @@ impl VoiceChannel {
                                 let val = (val as f32 - 4096.0) / 4096.0 * 100.0;
                                 self.process_control_event(ControlEvent::FineTune(val));
                             }
-                            2 => {
+                            2 if controller == 0x06 => {
                                 // Coarse tune
-                                if controller == 0x06 {
-                                    self.process_control_event(ControlEvent::CoarseTune(
-                                        value as f32 - 64.0,
-                                    ))
-                                }
+                                self.process_control_event(ControlEvent::CoarseTune(
+                                    value as f32 - 64.0,
+                                ))
                             }
+                            2 => {}
                             _ => {}
                         }
                     }
@@ -444,23 +443,17 @@ impl VoiceChannel {
                         self.control_event_data.cutoff = None;
                     }
                 }
-                0x78 => {
+                0x78 if value == 0 => {
                     // All Sounds Off
-                    if value == 0 {
-                        self.process_event(ChannelEvent::Audio(ChannelAudioEvent::AllNotesKilled));
-                    }
+                    self.process_event(ChannelEvent::Audio(ChannelAudioEvent::AllNotesKilled));
                 }
-                0x79 => {
+                0x79 if value == 0 => {
                     // Reset All Controllers
-                    if value == 0 {
-                        self.reset_control();
-                    }
+                    self.reset_control();
                 }
-                0x7B => {
+                0x7B if value == 0 => {
                     // All Notes Off
-                    if value == 0 {
-                        self.process_event(ChannelEvent::Audio(ChannelAudioEvent::AllNotesOff));
-                    }
+                    self.process_event(ChannelEvent::Audio(ChannelAudioEvent::AllNotesOff));
                 }
                 _ => {}
             },

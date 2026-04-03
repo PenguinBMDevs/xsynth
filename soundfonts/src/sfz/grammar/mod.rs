@@ -1,4 +1,5 @@
 #![allow(clippy::manual_strip)]
+#![allow(clippy::enum_variant_names)]
 #![allow(clippy::uninlined_format_args)]
 
 use std::borrow::Cow;

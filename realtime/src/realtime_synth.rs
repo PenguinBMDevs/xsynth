@@ -70,16 +70,10 @@ impl RealtimeSynthStatsReader {
     }
 }
 
-// A helper for making the stream be send/sync, allowing the entire synth to be passed between threads.
-// The stream is never actually accessed from multiple threads, it's only stored for ownership and then dropped.
-struct SendSyncStream(Stream);
-unsafe impl Sync for SendSyncStream {}
-unsafe impl Send for SendSyncStream {}
-
 struct RealtimeSynthThreadSharedData {
     buffered_renderer: Arc<Mutex<BufferedRenderer>>,
 
-    stream: SendSyncStream,
+    stream: Stream,
 
     event_senders: RealtimeEventSender,
 }
@@ -278,7 +272,7 @@ impl RealtimeSynth {
                 buffered_renderer: buffered,
 
                 event_senders: RealtimeEventSender::new(senders, max_nps, config.ignore_range),
-                stream: SendSyncStream(stream),
+                stream,
             }),
             join_handles: thread_handles,
 
@@ -335,13 +329,13 @@ impl RealtimeSynth {
     /// Pauses the playback of the audio output device.
     pub fn pause(&mut self) -> Result<(), PauseStreamError> {
         let data = self.data.as_mut().unwrap();
-        data.stream.0.pause()
+        data.stream.pause()
     }
 
     /// Resumes the playback of the audio output device.
     pub fn resume(&mut self) -> Result<(), PlayStreamError> {
         let data = self.data.as_mut().unwrap();
-        data.stream.0.play()
+        data.stream.play()
     }
 
     /// Changes the length of the buffer reader.

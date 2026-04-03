@@ -27,8 +27,8 @@ pub extern "C" fn XSynth_GetVersion() -> u32 {
 /// Parameters of the output audio
 /// - sample_rate: Audio sample rate
 /// - audio_channels: Number of audio channels
-///         Supported: XSYNTH_AUDIO_CHANNELS_MONO (mono),
-///                    XSYNTH_AUDIO_CHANNELS_STEREO (stereo)
+///   Supported: XSYNTH_AUDIO_CHANNELS_MONO (mono),
+///   XSYNTH_AUDIO_CHANNELS_STEREO (stereo)
 #[repr(C)]
 pub struct XSynth_StreamParams {
     pub sample_rate: u32,

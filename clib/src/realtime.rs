@@ -7,17 +7,17 @@ use xsynth_realtime::{RealtimeSynth, XSynthRealtimeConfig};
 
 /// Options for initializing the XSynth Realtime module
 /// - channels: Number of MIDI channels. If this is set to 16 (MIDI standard),
-///         then channel 10 will be configured for percussion.
+///   then channel 10 will be configured for percussion.
 /// - multithreading: Render the individisual keys of each channel parallel in a
-///         threadpool with the specified thread count. A value of -1 means no
-///         multithreading, while a value of 0 means that the thread count will
-///         be determined automatically.
+///   threadpool with the specified thread count. A value of -1 means no
+///   multithreading, while a value of 0 means that the thread count will
+///   be determined automatically.
 /// - fade_out_killing: If set to true, the voices killed due to the voice limit
-///         will fade out. If set to false, they will be killed immediately,
-///         usually causing clicking but improving performance.
+///   will fade out. If set to false, they will be killed immediately,
+///   usually causing clicking but improving performance.
 /// - render_window_ms: The length of the buffer reader in ms
 /// - ignore_range: A range of velocities that will not be played
-///         (see XSynth_ByteRange)
+///   (see XSynth_ByteRange)
 #[repr(C)]
 pub struct XSynth_RealtimeConfig {
     pub channels: u32,
@@ -89,9 +89,9 @@ pub extern "C" fn XSynth_Realtime_Create(config: XSynth_RealtimeConfig) -> XSynt
 /// --Parameters--
 /// - handle: The handle of the realtime synthesizer instance
 /// - channel: The number of the MIDI channel to send the event to
-///         (MIDI channel 1 is 0)
+///   (MIDI channel 1 is 0)
 /// - event: The type of MIDI event sent (see XSynth_ChannelGroup_SendAudioEvent
-///         for available options)
+///   for available options)
 /// - params: Parameters for the event
 #[no_mangle]
 pub extern "C" fn XSynth_Realtime_SendAudioEvent(
@@ -110,7 +110,7 @@ pub extern "C" fn XSynth_Realtime_SendAudioEvent(
 /// --Parameters--
 /// - handle: The handle of the realtime synthesizer instance
 /// - event: The type of MIDI event sent (see XSynth_ChannelGroup_SendAudioEvent
-///         for available options)
+///   for available options)
 /// - params: Parameters for the event
 #[no_mangle]
 pub extern "C" fn XSynth_Realtime_SendAudioEventAll(
@@ -129,9 +129,9 @@ pub extern "C" fn XSynth_Realtime_SendAudioEventAll(
 /// --Parameters--
 /// - handle: The handle of the realtime synthesizer instance
 /// - channel: The number of the MIDI channel to send the event to
-///         (MIDI channel 1 is 0)
+///   (MIDI channel 1 is 0)
 /// - event: The type of config event to be sent (see
-///         XSynth_ChannelGroup_SendConfigEvent for available options)
+///   XSynth_ChannelGroup_SendConfigEvent for available options)
 /// - params: Parameters for the event
 #[no_mangle]
 pub extern "C" fn XSynth_Realtime_SendConfigEvent(
@@ -150,7 +150,7 @@ pub extern "C" fn XSynth_Realtime_SendConfigEvent(
 /// --Parameters--
 /// - handle: The handle of the realtime synthesizer instance
 /// - event: The type of config event to be sent (see
-///         XSynth_ChannelGroup_SendConfigEvent for available options)
+///   XSynth_ChannelGroup_SendConfigEvent for available options)
 /// - params: Parameters for the event
 #[no_mangle]
 pub extern "C" fn XSynth_Realtime_SendConfigEventAll(
