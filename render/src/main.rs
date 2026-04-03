@@ -35,6 +35,7 @@ use atomic_float::AtomicF64;
 fn main() {
     let state = State::from_args();
     let params = state.config.group_options.audio_params;
+    print!("Loading soundfonts...");
     let soundfonts = state
         .soundfonts
         .iter()
@@ -56,7 +57,6 @@ fn main() {
     )
     .unwrap();
 
-    print!("Loading soundfonts...");
     println!(" done.");
 
     let length = get_midi_length(state.midi.to_str().unwrap());
