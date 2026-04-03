@@ -2301,6 +2301,7 @@ dependencies = [
  "rayon",
  "serde",
  "spin_sleep",
+ "thiserror",
  "to_vec",
  "wav",
  "xsynth-core",

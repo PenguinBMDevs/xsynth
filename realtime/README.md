@@ -15,10 +15,10 @@ This is a very simple example about initializing an instance of the realtime syn
 ```rust
 use xsynth_realtime::{RealtimeSynth, SynthEvent, ChannelEvent, ChannelAudioEvent};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Will use the default configuration and
     // default audio output device
-    let mut synth = RealtimeSynth::open_with_all_defaults();
+    let mut synth = RealtimeSynth::open_with_all_defaults()?;
     
     // Will send a note on event in channel 0
     synth.send_event(SynthEvent::Channel(
@@ -33,5 +33,6 @@ fn main() {
     println!("Voice Count: {}", synth.get_stats().voice_count());
 
     // The synth is automatically dropped here
+    Ok(())
 }
 ```

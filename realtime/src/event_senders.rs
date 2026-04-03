@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    io,
     ops::RangeInclusive,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -35,7 +36,19 @@ struct RoughNpsTracker {
 }
 
 impl RoughNpsTracker {
-    pub fn new() -> RoughNpsTracker {
+    fn disabled() -> RoughNpsTracker {
+        RoughNpsTracker {
+            rough_time: Arc::new(ReadWriteAtomicU64::new(0)),
+            last_time: 0,
+            windows: VecDeque::new(),
+            total_window_sum: 0,
+            current_window_sum: 0,
+            stop: Arc::new(AtomicBool::new(true)),
+            join_handle: None,
+        }
+    }
+
+    pub fn new() -> Result<RoughNpsTracker, io::Error> {
         let rough_time = Arc::new(ReadWriteAtomicU64::new(0));
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -54,11 +67,10 @@ impl RoughNpsTracker {
                         rough_time.write(last_time);
                         now = Instant::now();
                     }
-                })
-                .unwrap()
+                })?
         };
 
-        RoughNpsTracker {
+        Ok(RoughNpsTracker {
             rough_time,
             last_time: 0,
             windows: VecDeque::new(),
@@ -66,7 +78,7 @@ impl RoughNpsTracker {
             current_window_sum: 0,
             stop,
             join_handle: Some(join_handle),
-        }
+        })
     }
 
     pub fn calculate_nps(&mut self) -> u64 {
@@ -113,7 +125,11 @@ impl RoughNpsTracker {
 impl Drop for RoughNpsTracker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        self.join_handle.take().unwrap().join().unwrap();
+        if let Some(handle) = self.join_handle.take() {
+            if handle.join().is_err() {
+                eprintln!("xsynth-realtime: nps tracker thread panicked during shutdown");
+            }
+        }
     }
 }
 
@@ -134,14 +150,14 @@ impl EventSender {
         max_nps: Arc<ReadWriteAtomicU64>,
         sender: Sender<ChannelEvent>,
         ignore_range: RangeInclusive<u8>,
-    ) -> Self {
-        EventSender {
+    ) -> Result<Self, io::Error> {
+        Ok(EventSender {
             sender,
-            nps: RoughNpsTracker::new(),
+            nps: RoughNpsTracker::new()?,
             max_nps,
             skipped_notes: [0; 128],
             ignore_range,
-        }
+        })
     }
 
     pub fn send_audio(&mut self, event: ChannelAudioEvent) {
@@ -196,7 +212,7 @@ impl Clone for EventSender {
 
             // Rough nps tracker is only used for very extreme spam situations,
             // so creating a new one when cloning shouldn't be an issue
-            nps: RoughNpsTracker::new(),
+            nps: RoughNpsTracker::new().unwrap_or_else(|_| RoughNpsTracker::disabled()),
 
             // Skipped notes is related to nps limiter, therefore it's also not cloned
             skipped_notes: [0; 128],
@@ -217,13 +233,13 @@ impl RealtimeEventSender {
         senders: Vec<Sender<ChannelEvent>>,
         max_nps: Arc<ReadWriteAtomicU64>,
         ignore_range: RangeInclusive<u8>,
-    ) -> RealtimeEventSender {
-        RealtimeEventSender {
+    ) -> Result<RealtimeEventSender, io::Error> {
+        Ok(RealtimeEventSender {
             senders: senders
                 .into_iter()
                 .map(|s| EventSender::new(max_nps.clone(), s, ignore_range.clone()))
-                .collect(),
-        }
+                .collect::<Result<Vec<_>, _>>()?,
+        })
     }
 
     /// Sends a SynthEvent to the realtime synthesizer.
@@ -232,8 +248,16 @@ impl RealtimeEventSender {
     pub fn send_event(&mut self, event: SynthEvent) {
         match event {
             SynthEvent::Channel(channel, event) => match event {
-                ChannelEvent::Audio(e) => self.senders[channel as usize].send_audio(e),
-                ChannelEvent::Config(e) => self.senders[channel as usize].send_config(e),
+                ChannelEvent::Audio(e) => {
+                    if let Some(sender) = self.senders.get_mut(channel as usize) {
+                        sender.send_audio(e);
+                    }
+                }
+                ChannelEvent::Config(e) => {
+                    if let Some(sender) = self.senders.get_mut(channel as usize) {
+                        sender.send_config(e);
+                    }
+                }
             },
             SynthEvent::AllChannels(event) => match event {
                 ChannelEvent::Audio(e) => {
@@ -354,7 +378,7 @@ mod tests {
     fn cloned_sender_can_be_sent_to_another_thread() {
         let (tx, rx) = unbounded();
         let max_nps = Arc::new(ReadWriteAtomicU64::new(10_000));
-        let sender = RealtimeEventSender::new(vec![tx], max_nps, 0..=0);
+        let sender = RealtimeEventSender::new(vec![tx], max_nps, 0..=0).unwrap();
 
         let mut sender_thread = sender.clone();
         thread::spawn(move || {
@@ -376,7 +400,7 @@ mod tests {
     fn reset_clears_skipped_notes_state() {
         let (tx, rx) = unbounded();
         let max_nps = Arc::new(ReadWriteAtomicU64::new(0));
-        let mut sender = RealtimeEventSender::new(vec![tx], max_nps, 0..=0);
+        let mut sender = RealtimeEventSender::new(vec![tx], max_nps, 0..=0).unwrap();
 
         sender.send_event(SynthEvent::Channel(
             0,
@@ -409,5 +433,19 @@ mod tests {
             rx.recv().unwrap(),
             ChannelEvent::Audio(ChannelAudioEvent::NoteOff { key: 60 })
         ));
+    }
+
+    #[test]
+    fn out_of_range_channel_is_ignored() {
+        let (tx, rx) = unbounded();
+        let max_nps = Arc::new(ReadWriteAtomicU64::new(10_000));
+        let mut sender = RealtimeEventSender::new(vec![tx], max_nps, 0..=0).unwrap();
+
+        sender.send_event(SynthEvent::Channel(
+            1,
+            ChannelEvent::Audio(ChannelAudioEvent::NoteOn { key: 64, vel: 127 }),
+        ));
+
+        assert!(rx.is_empty());
     }
 }

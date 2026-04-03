@@ -4,7 +4,6 @@ use hotwatch::{Event, EventKind, Hotwatch};
 use std::{
     ffi::c_void,
     os::raw::c_ulong,
-    panic::{catch_unwind, AssertUnwindSafe},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
@@ -154,12 +153,10 @@ pub extern "C" fn InitializeKDMAPIStream() -> i32 {
         }
     };
 
-    let realtime_synth = match catch_unwind(AssertUnwindSafe(|| {
-        RealtimeSynth::open_with_default_output(config.get_synth_config())
-    })) {
+    let realtime_synth = match RealtimeSynth::open_with_default_output(config.get_synth_config()) {
         Ok(synth) => synth,
-        Err(_) => {
-            eprintln!("xsynth-kdmapi: failed to open realtime synth");
+        Err(err) => {
+            log_kdmapi_error("failed to open realtime synth", err);
             return 0;
         }
     };

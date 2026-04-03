@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    io,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
@@ -9,9 +10,11 @@ use std::{
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    Device, PauseStreamError, PlayStreamError, SizedSample, Stream, SupportedStreamConfig,
+    BuildStreamError, Device, DefaultStreamConfigError, PauseStreamError, PlayStreamError,
+    SizedSample, Stream, SupportedStreamConfig,
 };
 use crossbeam_channel::{bounded, unbounded};
+use thiserror::Error;
 
 use xsynth_core::{
     buffered_renderer::{BufferedRenderer, BufferedRendererStatsReader},
@@ -25,6 +28,36 @@ use xsynth_core::{
 use crate::{
     util::ReadWriteAtomicU64, RealtimeEventSender, SynthEvent, ThreadCount, XSynthRealtimeConfig,
 };
+
+#[derive(Debug, Error)]
+pub enum RealtimeSynthError {
+    #[error("failed to find output device")]
+    NoOutputDevice,
+
+    #[error("failed to get default output config: {0}")]
+    DefaultOutputConfig(#[from] DefaultStreamConfigError),
+
+    #[error("failed to build thread pool: {0}")]
+    ThreadPoolBuild(#[from] rayon::ThreadPoolBuildError),
+
+    #[error("failed to spawn realtime channel thread: {0}")]
+    ChannelThreadSpawn(#[source] io::Error),
+
+    #[error("failed to create realtime event sender: {0}")]
+    EventSenderInit(#[source] io::Error),
+
+    #[error("failed to spawn buffered renderer thread: {0}")]
+    BufferedRendererThreadSpawn(#[source] io::Error),
+
+    #[error("failed to create audio stream: {0}")]
+    BuildStream(#[from] BuildStreamError),
+
+    #[error("failed to start audio stream: {0}")]
+    PlayStream(#[from] PlayStreamError),
+
+    #[error("unsupported sample format: {0:?}")]
+    UnsupportedSampleFormat(cpal::SampleFormat),
+}
 
 /// Holds the statistics for an instance of RealtimeSynth.
 #[derive(Debug, Clone)]
@@ -91,15 +124,17 @@ pub struct RealtimeSynth {
 impl RealtimeSynth {
     /// Initializes a new realtime synthesizer using the default config and
     /// the default audio output.
-    pub fn open_with_all_defaults() -> Self {
+    pub fn open_with_all_defaults() -> Result<Self, RealtimeSynthError> {
         let host = cpal::default_host();
 
         let device = host
             .default_output_device()
-            .expect("failed to find output device");
-        println!("Output device: {}", device.name().unwrap());
+            .ok_or(RealtimeSynthError::NoOutputDevice)?;
+        if let Ok(name) = device.name() {
+            println!("Output device: {name}");
+        }
 
-        let stream_config = device.default_output_config().unwrap();
+        let stream_config = device.default_output_config()?;
 
         RealtimeSynth::open(Default::default(), &device, stream_config)
     }
@@ -108,15 +143,19 @@ impl RealtimeSynth {
     /// the default audio output.
     ///
     /// See the `XSynthRealtimeConfig` documentation for the available options.
-    pub fn open_with_default_output(config: XSynthRealtimeConfig) -> Self {
+    pub fn open_with_default_output(
+        config: XSynthRealtimeConfig,
+    ) -> Result<Self, RealtimeSynthError> {
         let host = cpal::default_host();
 
         let device = host
             .default_output_device()
-            .expect("failed to find output device");
-        println!("Output device: {}", device.name().unwrap());
+            .ok_or(RealtimeSynthError::NoOutputDevice)?;
+        if let Ok(name) = device.name() {
+            println!("Output device: {name}");
+        }
 
-        let stream_config = device.default_output_config().unwrap();
+        let stream_config = device.default_output_config()?;
 
         RealtimeSynth::open(config, &device, stream_config)
     }
@@ -130,7 +169,7 @@ impl RealtimeSynth {
         config: XSynthRealtimeConfig,
         device: &Device,
         stream_config: SupportedStreamConfig,
-    ) -> Self {
+    ) -> Result<Self, RealtimeSynthError> {
         let mut channel_stats = Vec::new();
         let mut senders = Vec::new();
         let mut command_senders = Vec::new();
@@ -140,12 +179,11 @@ impl RealtimeSynth {
 
         let pool = match config.multithreading {
             ThreadCount::None => None,
-            ThreadCount::Auto => Some(Arc::new(rayon::ThreadPoolBuilder::new().build().unwrap())),
+            ThreadCount::Auto => Some(Arc::new(rayon::ThreadPoolBuilder::new().build()?)),
             ThreadCount::Manual(threads) => Some(Arc::new(
                 rayon::ThreadPoolBuilder::new()
                     .num_threads(threads)
-                    .build()
-                    .unwrap(),
+                    .build()?,
             )),
         };
 
@@ -182,19 +220,19 @@ impl RealtimeSynth {
                     };
                     channel.push_events_iter(event_receiver.try_iter());
                     channel.read_samples(&mut vec);
-                    output_sender.send(vec).unwrap();
+                    if output_sender.send(vec).is_err() {
+                        break;
+                    }
                 })
-                .unwrap();
+                .map_err(RealtimeSynthError::ChannelThreadSpawn)?;
 
             thread_handles.push(join_handle);
         }
 
         if config.format == SynthFormat::Midi {
-            senders[9]
-                .send(ChannelEvent::Config(ChannelConfigEvent::SetPercussionMode(
-                    true,
-                )))
-                .unwrap();
+            let _ = senders[9].send(ChannelEvent::Config(ChannelConfigEvent::SetPercussionMode(
+                true,
+            )));
         }
 
         let mut vec_cache: VecDeque<Vec<f32>> = VecDeque::new();
@@ -228,19 +266,20 @@ impl RealtimeSynth {
             render,
             stream_params,
             calculate_render_size(sample_rate, config.render_window_ms),
-        )));
+        )
+        .map_err(RealtimeSynthError::BufferedRendererThreadSpawn)?));
 
         fn build_stream<T: SizedSample + ConvertSample>(
             device: &Device,
             stream_config: SupportedStreamConfig,
             buffered: Arc<Mutex<BufferedRenderer>>,
-        ) -> Stream {
+        ) -> Result<Stream, RealtimeSynthError> {
             let err_fn = |err| eprintln!("an error occurred on stream: {err}");
             let mut output_vec = Vec::new();
 
             let mut limiter = VolumeLimiter::new(stream_config.channels());
 
-            device
+            Ok(device
                 .build_output_stream(
                     &stream_config.into(),
                     move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
@@ -252,33 +291,33 @@ impl RealtimeSynth {
                     },
                     err_fn,
                     None,
-                )
-                .unwrap()
+                )?)
         }
 
         let stream = match stream_config.sample_format() {
-            cpal::SampleFormat::F32 => build_stream::<f32>(device, stream_config, buffered.clone()),
-            cpal::SampleFormat::I16 => build_stream::<i16>(device, stream_config, buffered.clone()),
-            cpal::SampleFormat::U16 => build_stream::<u16>(device, stream_config, buffered.clone()),
-            _ => panic!("unsupported sample format"), // I hate when crates use #[non_exhaustive]
+            cpal::SampleFormat::F32 => build_stream::<f32>(device, stream_config, buffered.clone())?,
+            cpal::SampleFormat::I16 => build_stream::<i16>(device, stream_config, buffered.clone())?,
+            cpal::SampleFormat::U16 => build_stream::<u16>(device, stream_config, buffered.clone())?,
+            _ => return Err(RealtimeSynthError::UnsupportedSampleFormat(stream_config.sample_format())),
         };
 
-        stream.play().unwrap();
+        stream.play()?;
 
         let max_nps = Arc::new(ReadWriteAtomicU64::new(10000));
 
-        Self {
+        Ok(Self {
             data: Some(RealtimeSynthThreadSharedData {
                 buffered_renderer: buffered,
 
-                event_senders: RealtimeEventSender::new(senders, max_nps, config.ignore_range),
+                event_senders: RealtimeEventSender::new(senders, max_nps, config.ignore_range)
+                    .map_err(RealtimeSynthError::EventSenderInit)?,
                 stream,
             }),
             join_handles: thread_handles,
 
             stats,
             stream_params,
-        }
+        })
     }
 
     /// Sends a SynthEvent to the realtime synthesizer.
@@ -353,7 +392,9 @@ impl Drop for RealtimeSynth {
         // data.stream.pause().unwrap();
         drop(data);
         for handle in self.join_handles.drain(..) {
-            handle.join().unwrap();
+            if handle.join().is_err() {
+                eprintln!("xsynth-realtime: channel handler thread panicked during shutdown");
+            }
         }
     }
 }

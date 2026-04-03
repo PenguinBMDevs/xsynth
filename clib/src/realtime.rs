@@ -1,5 +1,4 @@
 use crate::{handles::*, utils::*, XSynth_ByteRange, XSynth_StreamParams};
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use xsynth_core::{
     channel::{ChannelConfigEvent, ChannelEvent, ChannelInitOptions},
     channel_group::SynthEvent,
@@ -81,7 +80,7 @@ pub extern "C" fn XSynth_Realtime_Create(config: XSynth_RealtimeConfig) -> XSynt
         ignore_range: config.ignore_range.start..=config.ignore_range.end,
     };
 
-    match catch_unwind(AssertUnwindSafe(|| RealtimeSynth::open_with_default_output(options))) {
+    match RealtimeSynth::open_with_default_output(options) {
         Ok(new) => XSynth_RealtimeSynth::from(new),
         Err(_) => XSynth_RealtimeSynth::null(),
     }

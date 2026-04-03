@@ -3,9 +3,9 @@ use xsynth_core::channel::{ChannelAudioEvent, ChannelEvent};
 
 use xsynth_realtime::{RealtimeSynth, SynthEvent};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = {
-        let mut synth = RealtimeSynth::open_with_all_defaults();
+        let mut synth = RealtimeSynth::open_with_all_defaults()?;
 
         let start = Instant::now();
         for _ in 0..100000 {
@@ -28,4 +28,5 @@ fn main() {
     std::thread::sleep(Duration::from_secs(2));
 
     dbg!(elapsed);
+    Ok(())
 }
