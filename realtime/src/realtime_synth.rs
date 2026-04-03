@@ -111,6 +111,14 @@ struct RealtimeSynthThreadSharedData {
     event_senders: RealtimeEventSender,
 }
 
+struct PreparedRealtimeChannels {
+    channel_stats: Vec<xsynth_core::channel::VoiceChannelStatsReader>,
+    senders: Vec<crossbeam_channel::Sender<ChannelEvent>>,
+    command_senders: Vec<crossbeam_channel::Sender<Vec<f32>>>,
+    join_handles: Vec<thread::JoinHandle<()>>,
+    output_receiver: crossbeam_channel::Receiver<Vec<f32>>,
+}
+
 /// A realtime MIDI synthesizer using an audio device for output.
 pub struct RealtimeSynth {
     data: Option<RealtimeSynthThreadSharedData>,
@@ -170,136 +178,35 @@ impl RealtimeSynth {
         device: &Device,
         stream_config: SupportedStreamConfig,
     ) -> Result<Self, RealtimeSynthError> {
-        let mut channel_stats = Vec::new();
-        let mut senders = Vec::new();
-        let mut command_senders = Vec::new();
-
         let sample_rate = stream_config.sample_rate().0;
         let stream_params = AudioStreamParams::new(sample_rate, stream_config.channels().into());
+        let channel_pool = build_channel_pool(config.multithreading)?;
+        let channel_count = channel_count(config.format);
 
-        let pool = match config.multithreading {
-            ThreadCount::None => None,
-            ThreadCount::Auto => Some(Arc::new(rayon::ThreadPoolBuilder::new().build()?)),
-            ThreadCount::Manual(threads) => Some(Arc::new(
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(threads)
-                    .build()?,
-            )),
-        };
-
-        let channel_count = match config.format {
-            SynthFormat::Midi => 16,
-            SynthFormat::Custom { channels } => channels,
-        };
-
-        let (output_sender, output_receiver) = bounded::<Vec<f32>>(channel_count as usize);
-
-        let mut thread_handles = vec![];
-
-        for _ in 0u32..channel_count {
-            let mut channel =
-                VoiceChannel::new(config.channel_init_options, stream_params, pool.clone());
-            let stats = channel.get_channel_stats();
-            channel_stats.push(stats);
-
-            let (event_sender, event_receiver) = unbounded();
-            senders.push(event_sender);
-
-            let (command_sender, command_receiver) = bounded::<Vec<f32>>(1);
-
-            command_senders.push(command_sender);
-
-            let output_sender = output_sender.clone();
-            let join_handle = thread::Builder::new()
-                .name("xsynth_channel_handler".to_string())
-                .spawn(move || loop {
-                    channel.push_events_iter(event_receiver.try_iter());
-                    let mut vec = match command_receiver.recv() {
-                        Ok(vec) => vec,
-                        Err(_) => break,
-                    };
-                    channel.push_events_iter(event_receiver.try_iter());
-                    channel.read_samples(&mut vec);
-                    if output_sender.send(vec).is_err() {
-                        break;
-                    }
-                })
-                .map_err(RealtimeSynthError::ChannelThreadSpawn)?;
-
-            thread_handles.push(join_handle);
-        }
-
-        if config.format == SynthFormat::Midi {
-            let _ = senders[9].send(ChannelEvent::Config(ChannelConfigEvent::SetPercussionMode(
-                true,
-            )));
-        }
-
-        let mut vec_cache: VecDeque<Vec<f32>> = VecDeque::new();
-        for _ in 0..channel_count {
-            vec_cache.push_front(Vec::new());
-        }
+        let PreparedRealtimeChannels {
+            channel_stats,
+            senders,
+            command_senders,
+            join_handles,
+            output_receiver,
+        } = prepare_channels(
+            channel_count,
+            config.channel_init_options,
+            stream_params,
+            channel_pool,
+            config.format,
+        )?;
 
         let stats = RealtimeSynthStats::new();
-
-        let total_voice_count = stats.voice_count.clone();
-
-        let render = FunctionAudioPipe::new(stream_params, move |out| {
-            for sender in command_senders.iter() {
-                let mut buf = vec_cache.pop_front().unwrap();
-                prepapre_cache_vec(&mut buf, out.len(), 0.0);
-
-                sender.send(buf).unwrap();
-            }
-
-            for _ in 0..channel_count {
-                let buf = output_receiver.recv().unwrap();
-                sum_simd(&buf, out);
-                vec_cache.push_front(buf);
-            }
-
-            let total_voices = channel_stats.iter().map(|c| c.voice_count()).sum();
-            total_voice_count.store(total_voices, Ordering::SeqCst);
-        });
-
+        let render =
+            build_render_pipe(stream_params, channel_count, command_senders, output_receiver, channel_stats, &stats);
         let buffered = Arc::new(Mutex::new(BufferedRenderer::new(
             render,
             stream_params,
             calculate_render_size(sample_rate, config.render_window_ms),
         )
         .map_err(RealtimeSynthError::BufferedRendererThreadSpawn)?));
-
-        fn build_stream<T: SizedSample + ConvertSample>(
-            device: &Device,
-            stream_config: SupportedStreamConfig,
-            buffered: Arc<Mutex<BufferedRenderer>>,
-        ) -> Result<Stream, RealtimeSynthError> {
-            let err_fn = |err| eprintln!("an error occurred on stream: {err}");
-            let mut output_vec = Vec::new();
-
-            let mut limiter = VolumeLimiter::new(stream_config.channels());
-
-            Ok(device
-                .build_output_stream(
-                    &stream_config.into(),
-                    move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-                        output_vec.resize(data.len(), 0.0);
-                        buffered.lock().unwrap().read(&mut output_vec);
-                        for (i, s) in limiter.limit_iter(output_vec.drain(0..)).enumerate() {
-                            data[i] = ConvertSample::from_f32(s);
-                        }
-                    },
-                    err_fn,
-                    None,
-                )?)
-        }
-
-        let stream = match stream_config.sample_format() {
-            cpal::SampleFormat::F32 => build_stream::<f32>(device, stream_config, buffered.clone())?,
-            cpal::SampleFormat::I16 => build_stream::<i16>(device, stream_config, buffered.clone())?,
-            cpal::SampleFormat::U16 => build_stream::<u16>(device, stream_config, buffered.clone())?,
-            _ => return Err(RealtimeSynthError::UnsupportedSampleFormat(stream_config.sample_format())),
-        };
+        let stream = build_output_stream(device, stream_config, buffered.clone())?;
 
         stream.play()?;
 
@@ -313,7 +220,7 @@ impl RealtimeSynth {
                     .map_err(RealtimeSynthError::EventSenderInit)?,
                 stream,
             }),
-            join_handles: thread_handles,
+            join_handles,
 
             stats,
             stream_params,
@@ -384,6 +291,163 @@ impl RealtimeSynth {
         let size = calculate_render_size(sample_rate, render_window_ms);
         data.buffered_renderer.lock().unwrap().set_render_size(size);
     }
+}
+
+fn build_channel_pool(
+    thread_count: ThreadCount,
+) -> Result<Option<Arc<rayon::ThreadPool>>, RealtimeSynthError> {
+    Ok(match thread_count {
+        ThreadCount::None => None,
+        ThreadCount::Auto => Some(Arc::new(rayon::ThreadPoolBuilder::new().build()?)),
+        ThreadCount::Manual(threads) => Some(Arc::new(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()?,
+        )),
+    })
+}
+
+fn channel_count(format: SynthFormat) -> u32 {
+    match format {
+        SynthFormat::Midi => 16,
+        SynthFormat::Custom { channels } => channels,
+    }
+}
+
+fn prepare_channels(
+    channel_count: u32,
+    init_options: xsynth_core::channel::ChannelInitOptions,
+    stream_params: AudioStreamParams,
+    channel_pool: Option<Arc<rayon::ThreadPool>>,
+    format: SynthFormat,
+) -> Result<PreparedRealtimeChannels, RealtimeSynthError> {
+    let (output_sender, output_receiver) = bounded::<Vec<f32>>(channel_count as usize);
+
+    let mut channel_stats = Vec::new();
+    let mut senders = Vec::new();
+    let mut command_senders = Vec::new();
+    let mut join_handles = Vec::new();
+
+    for _ in 0..channel_count {
+        let channel = VoiceChannel::new(init_options, stream_params, channel_pool.clone());
+        channel_stats.push(channel.get_channel_stats());
+
+        let (event_sender, event_receiver) = unbounded();
+        senders.push(event_sender);
+
+        let (command_sender, command_receiver) = bounded::<Vec<f32>>(1);
+        command_senders.push(command_sender);
+
+        let output_sender = output_sender.clone();
+        let join_handle = spawn_channel_thread(channel, event_receiver, command_receiver, output_sender)?;
+        join_handles.push(join_handle);
+    }
+
+    if format == SynthFormat::Midi {
+        let _ = senders[9].send(ChannelEvent::Config(ChannelConfigEvent::SetPercussionMode(true)));
+    }
+
+    Ok(PreparedRealtimeChannels {
+        channel_stats,
+        senders,
+        command_senders,
+        join_handles,
+        output_receiver,
+    })
+}
+
+fn spawn_channel_thread(
+    mut channel: VoiceChannel,
+    event_receiver: crossbeam_channel::Receiver<ChannelEvent>,
+    command_receiver: crossbeam_channel::Receiver<Vec<f32>>,
+    output_sender: crossbeam_channel::Sender<Vec<f32>>,
+) -> Result<thread::JoinHandle<()>, RealtimeSynthError> {
+    thread::Builder::new()
+        .name("xsynth_channel_handler".to_string())
+        .spawn(move || loop {
+            channel.push_events_iter(event_receiver.try_iter());
+            let mut vec = match command_receiver.recv() {
+                Ok(vec) => vec,
+                Err(_) => break,
+            };
+            channel.push_events_iter(event_receiver.try_iter());
+            channel.read_samples(&mut vec);
+            if output_sender.send(vec).is_err() {
+                break;
+            }
+        })
+        .map_err(RealtimeSynthError::ChannelThreadSpawn)
+}
+
+fn build_render_pipe(
+    stream_params: AudioStreamParams,
+    channel_count: u32,
+    command_senders: Vec<crossbeam_channel::Sender<Vec<f32>>>,
+    output_receiver: crossbeam_channel::Receiver<Vec<f32>>,
+    channel_stats: Vec<xsynth_core::channel::VoiceChannelStatsReader>,
+    stats: &RealtimeSynthStats,
+) -> FunctionAudioPipe<impl FnMut(&mut [f32]) + Send> {
+    let mut vec_cache: VecDeque<Vec<f32>> = VecDeque::new();
+    for _ in 0..channel_count {
+        vec_cache.push_front(Vec::new());
+    }
+
+    let total_voice_count = stats.voice_count.clone();
+
+    FunctionAudioPipe::new(stream_params, move |out| {
+        for sender in &command_senders {
+            let mut buf = vec_cache.pop_front().unwrap();
+            prepapre_cache_vec(&mut buf, out.len(), 0.0);
+            sender.send(buf).unwrap();
+        }
+
+        for _ in 0..channel_count {
+            let buf = output_receiver.recv().unwrap();
+            sum_simd(&buf, out);
+            vec_cache.push_front(buf);
+        }
+
+        let total_voices = channel_stats.iter().map(|c| c.voice_count()).sum();
+        total_voice_count.store(total_voices, Ordering::SeqCst);
+    })
+}
+
+fn build_output_stream(
+    device: &Device,
+    stream_config: SupportedStreamConfig,
+    buffered: Arc<Mutex<BufferedRenderer>>,
+) -> Result<Stream, RealtimeSynthError> {
+    match stream_config.sample_format() {
+        cpal::SampleFormat::F32 => build_output_stream_for::<f32>(device, stream_config, buffered),
+        cpal::SampleFormat::I16 => build_output_stream_for::<i16>(device, stream_config, buffered),
+        cpal::SampleFormat::U16 => build_output_stream_for::<u16>(device, stream_config, buffered),
+        _ => Err(RealtimeSynthError::UnsupportedSampleFormat(
+            stream_config.sample_format(),
+        )),
+    }
+}
+
+fn build_output_stream_for<T: SizedSample + ConvertSample>(
+    device: &Device,
+    stream_config: SupportedStreamConfig,
+    buffered: Arc<Mutex<BufferedRenderer>>,
+) -> Result<Stream, RealtimeSynthError> {
+    let err_fn = |err| eprintln!("an error occurred on stream: {err}");
+    let mut output_vec = Vec::new();
+    let mut limiter = VolumeLimiter::new(stream_config.channels());
+
+    Ok(device.build_output_stream(
+        &stream_config.into(),
+        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+            output_vec.resize(data.len(), 0.0);
+            buffered.lock().unwrap().read(&mut output_vec);
+            for (i, s) in limiter.limit_iter(output_vec.drain(0..)).enumerate() {
+                data[i] = ConvertSample::from_f32(s);
+            }
+        },
+        err_fn,
+        None,
+    )?)
 }
 
 impl Drop for RealtimeSynth {
