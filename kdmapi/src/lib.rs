@@ -72,7 +72,7 @@ fn teardown_synth(mut synth: Box<SharedSynth>) {
     synth.killed.store(true, Ordering::Release);
     if let Some(handle) = synth.stats_join_handle.take() {
         if handle.join().is_err() {
-        eprintln!("xsynth-kdmapi: stats thread panicked during shutdown");
+            eprintln!("xsynth-kdmapi: stats thread panicked during shutdown");
         }
     }
 
@@ -196,19 +196,19 @@ pub extern "C" fn InitializeKDMAPIStream() -> i32 {
     // Watch for config changes and apply them
     let mut sender_thread = sender.clone();
     if let Err(err) = hotwatch.watch(settings_path.clone(), move |event: Event| {
-            if let EventKind::Modify(_) = event.kind {
-                thread::sleep(Duration::from_millis(10));
-                match load_config::<Settings>() {
-                    Ok(settings) => {
-                        let layers = settings.get_layers();
-                        sender_thread.send_event(SynthEvent::AllChannels(ChannelEvent::Config(
-                            ChannelConfigEvent::SetLayerCount(layers),
-                        )));
-                    }
-                    Err(err) => log_kdmapi_error("failed to reload settings.json", err),
+        if let EventKind::Modify(_) = event.kind {
+            thread::sleep(Duration::from_millis(10));
+            match load_config::<Settings>() {
+                Ok(settings) => {
+                    let layers = settings.get_layers();
+                    sender_thread.send_event(SynthEvent::AllChannels(ChannelEvent::Config(
+                        ChannelConfigEvent::SetLayerCount(layers),
+                    )));
                 }
+                Err(err) => log_kdmapi_error("failed to reload settings.json", err),
             }
-        }) {
+        }
+    }) {
         log_kdmapi_error("failed to watch settings.json", err);
         killed.store(true, Ordering::Release);
         let _ = stats_join_handle.join();
@@ -218,19 +218,19 @@ pub extern "C" fn InitializeKDMAPIStream() -> i32 {
     // Watch for soundfont list changes and apply them
     let mut sender_thread = sender.clone();
     if let Err(err) = hotwatch.watch(soundfonts_path.clone(), move |event: Event| {
-            if let EventKind::Modify(_) = event.kind {
-                thread::sleep(Duration::from_millis(10));
-                match load_config::<SFList>() {
-                    Ok(sflist) => {
-                        let sfs = sflist.create_sfbase_vector(params);
-                        sender_thread.send_event(SynthEvent::AllChannels(ChannelEvent::Config(
-                            ChannelConfigEvent::SetSoundfonts(sfs),
-                        )));
-                    }
-                    Err(err) => log_kdmapi_error("failed to reload soundfonts.json", err),
+        if let EventKind::Modify(_) = event.kind {
+            thread::sleep(Duration::from_millis(10));
+            match load_config::<SFList>() {
+                Ok(sflist) => {
+                    let sfs = sflist.create_sfbase_vector(params);
+                    sender_thread.send_event(SynthEvent::AllChannels(ChannelEvent::Config(
+                        ChannelConfigEvent::SetSoundfonts(sfs),
+                    )));
                 }
+                Err(err) => log_kdmapi_error("failed to reload soundfonts.json", err),
             }
-        }) {
+        }
+    }) {
         log_kdmapi_error("failed to watch soundfonts.json", err);
         killed.store(true, Ordering::Release);
         let _ = stats_join_handle.join();
@@ -270,7 +270,9 @@ pub extern "C" fn TerminateKDMAPIStream() -> i32 {
     };
     if let Some(synth) = synth {
         teardown_synth(synth);
-        global_state().current_voice_count.store(0, Ordering::Relaxed);
+        global_state()
+            .current_voice_count
+            .store(0, Ordering::Relaxed);
         1
     } else {
         0
@@ -280,7 +282,7 @@ pub extern "C" fn TerminateKDMAPIStream() -> i32 {
 #[no_mangle]
 pub extern "C" fn ResetKDMAPIStream() {
     if let Some(synth) = global_state().synth.lock().unwrap().as_mut() {
-            synth.0.senders.reset_synth();
+        synth.0.senders.reset_synth();
     }
 }
 

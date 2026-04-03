@@ -72,8 +72,8 @@ mod tests {
             XSynth_Realtime_Reset, XSynth_Realtime_SetSoundfonts,
         },
         soundfont::{
-            XSynth_GenDefault_SoundfontOptions, XSynth_Soundfont_LoadNew,
-            XSynth_Soundfont_Remove, XSynth_SoundfontOptions,
+            XSynth_GenDefault_SoundfontOptions, XSynth_SoundfontOptions, XSynth_Soundfont_LoadNew,
+            XSynth_Soundfont_Remove,
         },
         XSynth_GenDefault_StreamParams,
     };
@@ -123,9 +123,8 @@ mod tests {
 
     #[test]
     fn soundfont_load_rejects_null_path() {
-        let handle = unsafe {
-            XSynth_Soundfont_LoadNew(ptr::null(), XSynth_GenDefault_SoundfontOptions())
-        };
+        let handle =
+            unsafe { XSynth_Soundfont_LoadNew(ptr::null(), XSynth_GenDefault_SoundfontOptions()) };
         assert!(handle.soundfont.is_null());
 
         XSynth_Soundfont_Remove(handle);

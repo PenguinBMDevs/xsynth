@@ -114,7 +114,6 @@ impl State {
     }
 
     fn from_matches(matches: &ArgMatches) -> Self {
-
         let midi = matches
             .get_one::<String>("midi")
             .cloned()

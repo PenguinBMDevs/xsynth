@@ -10,7 +10,7 @@ use std::{
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    BuildStreamError, Device, DefaultStreamConfigError, PauseStreamError, PlayStreamError,
+    BuildStreamError, DefaultStreamConfigError, Device, PauseStreamError, PlayStreamError,
     SizedSample, Stream, SupportedStreamConfig,
 };
 use crossbeam_channel::{bounded, unbounded};
@@ -198,14 +198,22 @@ impl RealtimeSynth {
         )?;
 
         let stats = RealtimeSynthStats::new();
-        let render =
-            build_render_pipe(stream_params, channel_count, command_senders, output_receiver, channel_stats, &stats);
-        let buffered = Arc::new(Mutex::new(BufferedRenderer::new(
-            render,
+        let render = build_render_pipe(
             stream_params,
-            calculate_render_size(sample_rate, config.render_window_ms),
-        )
-        .map_err(RealtimeSynthError::BufferedRendererThreadSpawn)?));
+            channel_count,
+            command_senders,
+            output_receiver,
+            channel_stats,
+            &stats,
+        );
+        let buffered = Arc::new(Mutex::new(
+            BufferedRenderer::new(
+                render,
+                stream_params,
+                calculate_render_size(sample_rate, config.render_window_ms),
+            )
+            .map_err(RealtimeSynthError::BufferedRendererThreadSpawn)?,
+        ));
         let stream = build_output_stream(device, stream_config, buffered.clone())?;
 
         stream.play()?;
@@ -339,12 +347,15 @@ fn prepare_channels(
         command_senders.push(command_sender);
 
         let output_sender = output_sender.clone();
-        let join_handle = spawn_channel_thread(channel, event_receiver, command_receiver, output_sender)?;
+        let join_handle =
+            spawn_channel_thread(channel, event_receiver, command_receiver, output_sender)?;
         join_handles.push(join_handle);
     }
 
     if format == SynthFormat::Midi {
-        let _ = senders[9].send(ChannelEvent::Config(ChannelConfigEvent::SetPercussionMode(true)));
+        let _ = senders[9].send(ChannelEvent::Config(ChannelConfigEvent::SetPercussionMode(
+            true,
+        )));
     }
 
     Ok(PreparedRealtimeChannels {

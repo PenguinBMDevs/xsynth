@@ -226,8 +226,10 @@ impl AudioPipe for ChannelGroup {
 #[cfg(test)]
 mod tests {
     use crate::{
-        channel::{ChannelAudioEvent, ChannelInitOptions, ChannelEvent},
-        channel_group::{ChannelGroupConfig, ParallelismOptions, SynthEvent, SynthFormat, ThreadCount},
+        channel::{ChannelAudioEvent, ChannelEvent, ChannelInitOptions},
+        channel_group::{
+            ChannelGroupConfig, ParallelismOptions, SynthEvent, SynthFormat, ThreadCount,
+        },
         AudioStreamParams, ChannelCount,
     };
 

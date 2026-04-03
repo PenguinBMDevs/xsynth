@@ -264,12 +264,13 @@ pub extern "C" fn XSynth_Realtime_ClearSoundfonts(handle: XSynth_RealtimeSynth) 
 pub extern "C" fn XSynth_Realtime_GetStreamParams(
     handle: XSynth_RealtimeSynth,
 ) -> XSynth_StreamParams {
-    handle
-        .try_as_ref()
-        .map_or(XSynth_StreamParams {
+    handle.try_as_ref().map_or(
+        XSynth_StreamParams {
             sample_rate: 0,
             audio_channels: 0,
-        }, |synth| convert_streamparams_to_c(&synth.stream_params()))
+        },
+        |synth| convert_streamparams_to_c(&synth.stream_params()),
+    )
 }
 
 /// Returns the statistics of the specified realtime synth instance.

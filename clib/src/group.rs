@@ -152,7 +152,9 @@ pub extern "C" fn XSynth_ChannelGroup_SendAudioEventAll(
 ) {
     if let Ok(ev) = convert_audio_event(event, params) {
         unsafe {
-            handle.as_mut_unchecked().send_event(SynthEvent::AllChannels(ev));
+            handle
+                .as_mut_unchecked()
+                .send_event(SynthEvent::AllChannels(ev));
         }
     }
 }
@@ -204,7 +206,9 @@ pub extern "C" fn XSynth_ChannelGroup_SendConfigEventAll(
 ) {
     if let Ok(ev) = convert_config_event(event, params) {
         unsafe {
-            handle.as_mut_unchecked().send_event(SynthEvent::AllChannels(ev));
+            handle
+                .as_mut_unchecked()
+                .send_event(SynthEvent::AllChannels(ev));
         }
     }
 }
@@ -304,11 +308,10 @@ pub extern "C" fn XSynth_ChannelGroup_VoiceCount(handle: XSynth_ChannelGroup) ->
 pub extern "C" fn XSynth_ChannelGroup_GetStreamParams(
     handle: XSynth_ChannelGroup,
 ) -> XSynth_StreamParams {
-    handle
-        .try_as_ref()
-        .map_or_else(|| XSynth_GenDefault_StreamParams(), |group| {
-            convert_streamparams_to_c(group.stream_params())
-        })
+    handle.try_as_ref().map_or_else(
+        || XSynth_GenDefault_StreamParams(),
+        |group| convert_streamparams_to_c(group.stream_params()),
+    )
 }
 
 /// Drops the desired channel group.
