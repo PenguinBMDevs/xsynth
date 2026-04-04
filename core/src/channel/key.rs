@@ -95,4 +95,8 @@ impl KeyData {
     pub fn set_damper(&mut self, damper: bool) {
         self.voices.set_damper(damper);
     }
+
+    pub fn kill_by_exclusive_class(&mut self, class: u8) {
+        self.voices.kill_by_exclusive_class(class);
+    }
 }

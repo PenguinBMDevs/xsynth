@@ -103,7 +103,11 @@ pub struct SampleReaderNoLoop<Sampler: BufferSampler> {
 
 impl<Sampler: BufferSampler> SampleReaderNoLoop<Sampler> {
     pub fn new(buffer: Sampler, loop_params: LoopParams) -> Self {
-        let length = Some(buffer.length());
+        let stop = loop_params
+            .stop
+            .map(|stop| stop as usize)
+            .unwrap_or_else(|| buffer.length());
+        let length = Some(stop);
         Self {
             buffer,
             length,
@@ -119,7 +123,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderNoLoop<Sampler> {
 
     fn is_past_end(&self, pos: usize) -> bool {
         if let Some(len) = self.length {
-            pos - self.offset >= len
+            pos >= len.saturating_sub(self.offset)
         } else {
             false
         }
@@ -178,7 +182,11 @@ pub struct SampleReaderLoopSustain<Sampler: BufferSampler> {
 
 impl<Sampler: BufferSampler> SampleReaderLoopSustain<Sampler> {
     pub fn new(buffer: Sampler, loop_params: LoopParams) -> Self {
-        let length = Some(buffer.length());
+        let stop = loop_params
+            .stop
+            .map(|stop| stop as usize)
+            .unwrap_or_else(|| buffer.length());
+        let length = Some(stop);
         Self {
             buffer,
             length,
@@ -211,7 +219,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoopSustain<Sampler> {
 
     fn is_past_end(&self, pos: usize) -> bool {
         if let Some(len) = self.length {
-            pos - self.last - self.offset >= len
+            pos >= len.saturating_sub(self.last + self.offset)
         } else {
             false
         }

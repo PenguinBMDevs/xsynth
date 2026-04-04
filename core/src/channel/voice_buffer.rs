@@ -120,6 +120,14 @@ impl VoiceBuffer {
         }
     }
 
+    pub fn kill_by_exclusive_class(&mut self, class: u8) {
+        for voice in &mut self.buffer {
+            if voice.exclusive_class() == Some(class) {
+                voice.signal_release(ReleaseType::Kill);
+            }
+        }
+    }
+
     fn get_active_count(&mut self) -> usize {
         let mut active = 0;
         for i in 0..self.buffer.len() {

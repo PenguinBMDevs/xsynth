@@ -240,6 +240,12 @@ impl VoiceChannel {
         }
     }
 
+    fn kill_voices_in_exclusive_class(&mut self, class: u8) {
+        for key in self.key_voices.iter_mut() {
+            key.data.kill_by_exclusive_class(class);
+        }
+    }
+
     /// Sends a ChannelEvent to the channel.
     /// See the `ChannelEvent` documentation for more information.
     pub fn process_event(&mut self, event: ChannelEvent) {
@@ -252,6 +258,14 @@ impl VoiceChannel {
             match e {
                 ChannelEvent::Audio(audio) => match audio {
                     ChannelAudioEvent::NoteOn { key, vel } => {
+                        let classes: Vec<_> = self
+                            .params
+                            .channel_sf
+                            .exclusive_classes_attack(key, vel)
+                            .collect();
+                        for class in classes {
+                            self.kill_voices_in_exclusive_class(class);
+                        }
                         if let Some(key) = self.key_voices.get_mut(key as usize) {
                             let ev = KeyNoteEvent::On(vel);
                             key.event_cache.push(ev);

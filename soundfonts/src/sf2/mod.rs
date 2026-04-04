@@ -1,12 +1,17 @@
 use crate::{sfz::AmpegEnvelopeParams, LoopMode};
+use soundfont::raw::SampleLink;
 use std::{fs::File, ops::RangeInclusive, path::PathBuf, sync::Arc};
 
 use thiserror::Error;
 
 mod instrument;
+mod modulator;
 mod preset;
 mod sample;
 mod zone;
+
+pub use modulator::Sf2NoteParams;
+pub(crate) use modulator::{default_raw_envelope, Sf2NoteModulator, Sf2RawEnvelope};
 
 /// Errors that can be generated when loading an SF2 file.
 #[derive(Error, Debug, Clone)]
@@ -32,11 +37,39 @@ pub struct Sf2Region {
     pub loop_start: u32,
     pub loop_end: u32,
     pub offset: u32,
+    pub sample_end: u32,
     pub cutoff: Option<f32>,
     pub resonance: f32,
     pub ampeg_envelope: AmpegEnvelopeParams,
     pub fine_tune: i16,
     pub coarse_tune: i16,
+    pub scale_tuning: i16,
+    pub exclusive_class: Option<u8>,
+    pub(crate) cutoff_cents: Option<i32>,
+    pub(crate) raw_envelope: Sf2RawEnvelope,
+    pub(crate) note_modulators: Arc<[Sf2NoteModulator]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Sf2SampleLinkType {
+    Mono,
+    Left,
+    Right,
+    Linked,
+}
+
+impl From<SampleLink> for Sf2SampleLinkType {
+    fn from(value: SampleLink) -> Self {
+        if value.is_left() {
+            Self::Left
+        } else if value.is_right() {
+            Self::Right
+        } else if value.is_linked() {
+            Self::Linked
+        } else {
+            Self::Mono
+        }
+    }
 }
 
 /// Structure that holds the parameters of an SF2 preset.

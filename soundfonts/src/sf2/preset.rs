@@ -1,4 +1,7 @@
-use super::{instrument::Sf2Instrument, sample::Sf2Sample, zone::Sf2Zone, Sf2Preset, Sf2Region};
+use super::{
+    default_raw_envelope, instrument::Sf2Instrument, modulator::Sf2NoteModDestination,
+    sample::Sf2Sample, zone::Sf2Zone, Sf2Preset, Sf2RawEnvelope, Sf2Region, Sf2SampleLinkType,
+};
 use crate::{convert_sample_index, sfz::AmpegEnvelopeParams, LoopMode};
 use soundfont::Preset;
 use std::{ops::RangeInclusive, sync::Arc};
@@ -51,146 +54,146 @@ impl Sf2ParsedPreset {
                     for subzone in &instrument.regions {
                         if let Some(sample_idx) = subzone.index {
                             let sample = &sample_data[sample_idx as usize];
-
-                            let new_region = Sf2Region {
-                                sample: Arc::new([]),
-                                sample_rate: sample.sample_rate,
-                                velrange: combine_ranges(
-                                    zone.velrange.clone().unwrap_or(0..=127),
-                                    subzone.velrange.clone().unwrap_or(0..=127),
-                                ),
-                                keyrange: combine_ranges(
+                            if sample.data.is_empty() {
+                                continue;
+                            }
+                            let keyrange = apply_fixed_value(
+                                combine_ranges(
                                     zone.keyrange.clone().unwrap_or(0..=127),
                                     subzone.keyrange.clone().unwrap_or(0..=127),
                                 ),
-                                root_key: subzone.root_override.unwrap_or(sample.origpitch as i16)
+                                subzone.fixed_key.or(zone.fixed_key),
+                            );
+                            let velrange = apply_fixed_value(
+                                combine_ranges(
+                                    zone.velrange.clone().unwrap_or(0..=127),
+                                    subzone.velrange.clone().unwrap_or(0..=127),
+                                ),
+                                subzone.fixed_velocity.or(zone.fixed_velocity),
+                            );
+                            let pan = sum_i16(zone.pan, subzone.pan).clamp(-500, 500);
+                            let attenuation = sum_i16(zone.attenuation, subzone.attenuation);
+                            let mut note_modulators = zone.note_modulators.clone();
+                            note_modulators.extend(subzone.note_modulators.iter().copied());
+                            let cutoff_cents = if zone.cutoff.is_some()
+                                || subzone.cutoff.is_some()
+                                || note_modulators.iter().any(|modulator| {
+                                    modulator.destination()
+                                        == Sf2NoteModDestination::InitialFilterFc
+                                }) {
+                                Some(merge_absolute_relative(13_500, zone.cutoff, subzone.cutoff))
+                            } else {
+                                None
+                            };
+                            let cutoff = cutoff_cents.map(|cents| raw_cutoff_to_hz(cents as f32));
+                            let resonance =
+                                sum_i16(zone.resonance, subzone.resonance) as f32 / 10.0;
+                            let raw_envelope = merge_raw_envelope(&zone, subzone);
+                            let offset = sum_sample_offset(
+                                zone.offset,
+                                zone.offset_coarse,
+                                subzone.offset,
+                                subzone.offset_coarse,
+                            );
+                            let end_offset = sum_sample_offset(
+                                zone.end_offset,
+                                zone.end_offset_coarse,
+                                subzone.end_offset,
+                                subzone.end_offset_coarse,
+                            );
+                            let loop_start_offset = sum_sample_offset(
+                                zone.loop_start_offset,
+                                zone.loop_start_offset_coarse,
+                                subzone.loop_start_offset,
+                                subzone.loop_start_offset_coarse,
+                            );
+                            let loop_end_offset = sum_sample_offset(
+                                zone.loop_end_offset,
+                                zone.loop_end_offset_coarse,
+                                subzone.loop_end_offset,
+                                subzone.loop_end_offset_coarse,
+                            );
+                            let sample_end_raw = (sample.original_length as i32 + end_offset)
+                                .clamp(0, sample.original_length as i32)
+                                as u32;
+                            let region_sample = build_region_samples(sample, &sample_data);
+                            let rendered_sample_end = region_sample
+                                .iter()
+                                .map(|sample| sample.len() as u32)
+                                .min()
+                                .unwrap_or(0);
+                            let offset = convert_sample_index(
+                                offset.clamp(0, sample_end_raw as i32) as u32,
+                                sample.sample_rate,
+                                sample_rate,
+                            )
+                            .min(rendered_sample_end);
+                            let sample_end = convert_sample_index(
+                                sample_end_raw,
+                                sample.sample_rate,
+                                sample_rate,
+                            )
+                            .min(rendered_sample_end);
+                            let loop_start = convert_sample_index(
+                                (sample.loop_start as i32 + loop_start_offset)
+                                    .clamp(0, sample_end_raw as i32)
+                                    as u32,
+                                sample.sample_rate,
+                                sample_rate,
+                            )
+                            .min(sample_end);
+                            let loop_end = convert_sample_index(
+                                (sample.loop_end as i32 + loop_end_offset)
+                                    .clamp(0, sample_end_raw as i32)
+                                    as u32,
+                                sample.sample_rate,
+                                sample_rate,
+                            )
+                            .min(sample_end);
+
+                            let new_region = Sf2Region {
+                                sample: region_sample,
+                                sample_rate: sample.sample_rate,
+                                velrange,
+                                keyrange,
+                                root_key: subzone
+                                    .root_override
+                                    .or(zone.root_override)
+                                    .unwrap_or(sample.origpitch as i16)
                                     as u8,
-                                volume: {
-                                    let v = zone
-                                        .attenuation
-                                        .unwrap_or(subzone.attenuation.unwrap_or(0));
-                                    10f32.powf(-0.4 * v as f32 / 200.0)
-                                },
-                                pan: zone.pan.unwrap_or(subzone.pan.unwrap_or(0)),
+                                volume: { 10f32.powf(-(attenuation as f32) / 200.0) },
+                                pan,
                                 loop_mode: zone
                                     .loop_mode
                                     .unwrap_or(subzone.loop_mode.unwrap_or(LoopMode::NoLoop)),
-                                loop_start: {
-                                    let offset = subzone.loop_start_offset.unwrap_or(0) as i32
-                                        + (subzone.loop_start_offset_coarse.unwrap_or(0) as i32
-                                            * 32768);
-                                    let v = (sample.loop_start as i32 + offset) as u32;
-                                    convert_sample_index(v, sample.sample_rate, sample_rate)
-                                },
-                                loop_end: {
-                                    let offset = subzone.loop_end_offset.unwrap_or(0) as i32
-                                        + (subzone.loop_end_offset_coarse.unwrap_or(0) as i32
-                                            * 32768);
-                                    let v = (sample.loop_end as i32 + offset) as u32;
-                                    convert_sample_index(v, sample.sample_rate, sample_rate)
-                                },
-                                offset: {
-                                    let zone_offset = subzone.offset.unwrap_or(0) as u32
-                                        + subzone.offset_coarse.unwrap_or(0) as u32 * 32768;
-                                    convert_sample_index(
-                                        zone_offset,
-                                        sample.sample_rate,
-                                        sample_rate,
-                                    )
-                                },
-                                cutoff: subzone.cutoff.map(|v| {
-                                    2f32.powf(v as f32 / 1200.0)
-                                        * 8.176
-                                        * 2f32.powf(zone.cutoff.unwrap_or(0) as f32 / 1200.0)
-                                }),
-                                resonance: zone.resonance.unwrap_or(subzone.resonance.unwrap_or(0))
-                                    as f32
-                                    / 10.0,
-                                fine_tune: zone.fine_tune.unwrap_or(0)
-                                    + subzone.fine_tune.unwrap_or(0)
+                                loop_start,
+                                loop_end,
+                                offset,
+                                sample_end,
+                                cutoff,
+                                resonance,
+                                fine_tune: sum_i16(zone.fine_tune, subzone.fine_tune)
                                     + sample.pitchadj as i16,
-                                coarse_tune: zone.coarse_tune.unwrap_or(0)
-                                    + subzone.coarse_tune.unwrap_or(0),
-                                ampeg_envelope: AmpegEnvelopeParams {
-                                    ampeg_start: 0.0,
-                                    ampeg_delay: subzone.env_delay.unwrap_or(0.0)
-                                        * zone.env_delay.unwrap_or(1.0),
-                                    ampeg_attack: subzone.env_attack.unwrap_or(0.0)
-                                        * zone.env_attack.unwrap_or(1.0),
-                                    ampeg_hold: subzone.env_hold.unwrap_or(0.0)
-                                        * zone.env_hold.unwrap_or(1.0),
-                                    ampeg_decay: subzone.env_decay.unwrap_or(0.0)
-                                        * zone.env_decay.unwrap_or(1.0),
-                                    ampeg_sustain: zone
-                                        .env_sustain
-                                        .unwrap_or(subzone.env_sustain.unwrap_or(100.0)),
-                                    ampeg_release: subzone.env_release.unwrap_or(0.0)
-                                        * zone.env_release.unwrap_or(1.0),
-                                },
+                                coarse_tune: sum_i16(zone.coarse_tune, subzone.coarse_tune),
+                                ampeg_envelope: raw_envelope_to_ampeg(raw_envelope),
+                                scale_tuning: subzone
+                                    .scale_tuning
+                                    .or(zone.scale_tuning)
+                                    .unwrap_or(100),
+                                exclusive_class: subzone.exclusive_class.or(zone.exclusive_class),
+                                cutoff_cents,
+                                raw_envelope,
+                                note_modulators: Arc::from(note_modulators),
                             };
 
-                            regions.push((new_region, sample.clone()));
+                            regions.push(new_region);
                         }
                     }
                 }
             }
 
-            // Second pass -> Stereo sample linking
-            // This is kinda hacky, there has to be a better way to do this
-            // I hate this code
-            let mut ignored_idx = Vec::new();
-            for (i, region) in regions.clone().into_iter().enumerate() {
-                if ignored_idx.contains(&i) {
-                    continue;
-                }
-                if region.1.link_type.abs() == 1 {
-                    if region.0.pan.abs() == 500 {
-                        match regions
-                            .clone()
-                            .into_iter()
-                            .position(|v: (Sf2Region, Sf2Sample)| {
-                                let v1 = v.0.clone();
-                                let v2 = region.0.clone();
-                                v.1.link_type == -region.1.link_type
-                                    && v1.pan == -v2.pan
-                                    && v1.root_key == v2.root_key
-                                    && v1.keyrange == v2.keyrange
-                                    && v1.velrange == v2.velrange
-                            }) {
-                            Some(reg) => {
-                                let sample_match = regions[reg].1.clone();
-                                let mut new_region = region.0.clone();
-                                match region.1.link_type {
-                                    -1 => {
-                                        new_region.sample = Arc::new([
-                                            region.1.data.clone(),
-                                            sample_match.data.clone(),
-                                        ])
-                                    }
-                                    1 => {
-                                        new_region.sample = Arc::new([
-                                            sample_match.data.clone(),
-                                            region.1.data.clone(),
-                                        ])
-                                    }
-                                    _ => {}
-                                }
-                                new_region.pan = 0;
-                                new_preset.regions.push(new_region);
-                                ignored_idx.push(reg);
-                            }
-                            None => {
-                                let mut new_region = region.0.clone();
-                                new_region.sample = Arc::new([region.1.data.clone()]);
-                                new_preset.regions.push(new_region);
-                            }
-                        }
-                    }
-                } else {
-                    let mut new_region = region.0.clone();
-                    new_region.sample = Arc::new([region.1.data.clone()]);
-                    new_preset.regions.push(new_region);
-                }
+            for region in regions {
+                new_preset.regions.push(region);
             }
             out.push(new_preset);
         }
@@ -209,4 +212,118 @@ fn combine_ranges<T: Ord + Copy>(
     let end2 = r2.end();
 
     (*start1.max(start2))..=(*end1.min(end2))
+}
+
+fn apply_fixed_value<T: Ord + Copy>(
+    range: RangeInclusive<T>,
+    fixed: Option<T>,
+) -> RangeInclusive<T> {
+    if let Some(fixed) = fixed {
+        combine_ranges(range, fixed..=fixed)
+    } else {
+        range
+    }
+}
+
+fn sum_i16(a: Option<i16>, b: Option<i16>) -> i16 {
+    a.unwrap_or(0) + b.unwrap_or(0)
+}
+
+fn sum_sample_offset(
+    fine_a: Option<i16>,
+    coarse_a: Option<i16>,
+    fine_b: Option<i16>,
+    coarse_b: Option<i16>,
+) -> i32 {
+    i32::from(sum_i16(fine_a, fine_b)) + i32::from(sum_i16(coarse_a, coarse_b)) * 32768
+}
+
+fn merge_absolute_relative(default: i16, preset: Option<i16>, instrument: Option<i16>) -> i32 {
+    i32::from(instrument.unwrap_or(default)) + i32::from(preset.unwrap_or(0))
+}
+
+fn merge_raw_envelope(preset: &Sf2Zone, instrument: &Sf2Zone) -> Sf2RawEnvelope {
+    let defaults = default_raw_envelope();
+    Sf2RawEnvelope {
+        delay_tc: merge_absolute_relative(
+            defaults.delay_tc as i16,
+            preset.env_delay,
+            instrument.env_delay,
+        ),
+        attack_tc: merge_absolute_relative(
+            defaults.attack_tc as i16,
+            preset.env_attack,
+            instrument.env_attack,
+        ),
+        hold_tc: merge_absolute_relative(
+            defaults.hold_tc as i16,
+            preset.env_hold,
+            instrument.env_hold,
+        ),
+        decay_tc: merge_absolute_relative(
+            defaults.decay_tc as i16,
+            preset.env_decay,
+            instrument.env_decay,
+        ),
+        sustain_cb: merge_absolute_relative(
+            defaults.sustain_cb as i16,
+            preset.env_sustain,
+            instrument.env_sustain,
+        ),
+        release_tc: merge_absolute_relative(
+            defaults.release_tc as i16,
+            preset.env_release,
+            instrument.env_release,
+        ),
+    }
+}
+
+fn raw_envelope_to_ampeg(raw: Sf2RawEnvelope) -> AmpegEnvelopeParams {
+    AmpegEnvelopeParams {
+        ampeg_start: 0.0,
+        ampeg_delay: timecents_to_seconds(raw.delay_tc as f32),
+        ampeg_attack: timecents_to_seconds(raw.attack_tc as f32),
+        ampeg_hold: timecents_to_seconds(raw.hold_tc as f32),
+        ampeg_decay: timecents_to_seconds(raw.decay_tc as f32),
+        ampeg_sustain: sustain_cb_to_percent(raw.sustain_cb as f32),
+        ampeg_release: timecents_to_seconds(raw.release_tc as f32),
+    }
+}
+
+fn raw_cutoff_to_hz(cents: f32) -> f32 {
+    2f32.powf(cents.clamp(1500.0, 13_500.0) / 1200.0) * 8.176
+}
+
+fn timecents_to_seconds(timecents: f32) -> f32 {
+    if timecents <= -32_768.0 {
+        0.0
+    } else {
+        2f32.powf(timecents.clamp(-12_000.0, 8_000.0) / 1200.0)
+    }
+}
+
+fn sustain_cb_to_percent(cb: f32) -> f32 {
+    10f32.powf(-cb.max(0.0) / 200.0) * 100.0
+}
+
+fn build_region_samples(sample: &Sf2Sample, sample_data: &[Sf2Sample]) -> Arc<[Arc<[f32]>]> {
+    match (sample.link_type, sample.linked_sample) {
+        (Sf2SampleLinkType::Left, Some(linked)) => {
+            if let Some(right) = sample_data.get(linked as usize) {
+                if !right.data.is_empty() {
+                    return Arc::new([sample.data.clone(), right.data.clone()]);
+                }
+            }
+            Arc::new([sample.data.clone()])
+        }
+        (Sf2SampleLinkType::Right, Some(linked)) => {
+            if let Some(left) = sample_data.get(linked as usize) {
+                if !left.data.is_empty() {
+                    return Arc::new([left.data.clone(), sample.data.clone()]);
+                }
+            }
+            Arc::new([sample.data.clone()])
+        }
+        _ => Arc::new([sample.data.clone()]),
+    }
 }

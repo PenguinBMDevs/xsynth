@@ -2,11 +2,15 @@ use crate::LoopMode;
 use soundfont::{raw::GeneratorType, Zone};
 use std::ops::RangeInclusive;
 
+use super::Sf2NoteModulator;
+
 #[derive(Default, Clone, Debug)]
 pub struct Sf2Zone {
     pub index: Option<u16>,
     pub offset: Option<i16>,
+    pub end_offset: Option<i16>,
     pub offset_coarse: Option<i16>,
+    pub end_offset_coarse: Option<i16>,
     pub loop_start_offset: Option<i16>,
     pub loop_start_offset_coarse: Option<i16>,
     pub loop_end_offset: Option<i16>,
@@ -15,18 +19,23 @@ pub struct Sf2Zone {
     pub cutoff: Option<i16>,
     pub resonance: Option<i16>,
     pub pan: Option<i16>,
-    pub env_delay: Option<f32>,
-    pub env_attack: Option<f32>,
-    pub env_hold: Option<f32>,
-    pub env_decay: Option<f32>,
-    pub env_sustain: Option<f32>,
-    pub env_release: Option<f32>,
+    pub env_delay: Option<i16>,
+    pub env_attack: Option<i16>,
+    pub env_hold: Option<i16>,
+    pub env_decay: Option<i16>,
+    pub env_sustain: Option<i16>,
+    pub env_release: Option<i16>,
     pub velrange: Option<RangeInclusive<u8>>,
     pub keyrange: Option<RangeInclusive<u8>>,
     pub attenuation: Option<i16>,
     pub fine_tune: Option<i16>,
     pub coarse_tune: Option<i16>,
     pub root_override: Option<i16>,
+    pub fixed_key: Option<u8>,
+    pub fixed_velocity: Option<u8>,
+    pub scale_tuning: Option<i16>,
+    pub exclusive_class: Option<u8>,
+    pub note_modulators: Vec<Sf2NoteModulator>,
 }
 
 impl Sf2Zone {
@@ -45,8 +54,14 @@ impl Sf2Zone {
 
                 match gen_ty {
                     GeneratorType::StartAddrsOffset => region.offset = gen.amount.as_i16().copied(),
+                    GeneratorType::EndAddrsOffset => {
+                        region.end_offset = gen.amount.as_i16().copied()
+                    }
                     GeneratorType::StartAddrsCoarseOffset => {
                         region.offset_coarse = gen.amount.as_i16().copied()
+                    }
+                    GeneratorType::EndAddrsCoarseOffset => {
+                        region.end_offset_coarse = gen.amount.as_i16().copied()
                     }
                     GeneratorType::StartloopAddrsOffset => {
                         region.loop_start_offset = gen.amount.as_i16().copied()
@@ -65,30 +80,15 @@ impl Sf2Zone {
                         region.resonance = gen.amount.as_i16().copied()
                     }
                     GeneratorType::Pan => region.pan = gen.amount.as_i16().copied(),
-                    GeneratorType::DelayVolEnv => {
-                        region.env_delay =
-                            gen.amount.as_i16().map(|v| 2f32.powf(*v as f32 / 1200.0))
-                    }
-                    GeneratorType::AttackVolEnv => {
-                        region.env_attack =
-                            gen.amount.as_i16().map(|v| 2f32.powf(*v as f32 / 1200.0))
-                    }
-                    GeneratorType::HoldVolEnv => {
-                        region.env_hold = gen.amount.as_i16().map(|v| 2f32.powf(*v as f32 / 1200.0))
-                    }
-                    GeneratorType::DecayVolEnv => {
-                        region.env_decay =
-                            gen.amount.as_i16().map(|v| 2f32.powf(*v as f32 / 1200.0))
-                    }
+                    GeneratorType::DelayVolEnv => region.env_delay = gen.amount.as_i16().copied(),
+                    GeneratorType::AttackVolEnv => region.env_attack = gen.amount.as_i16().copied(),
+                    GeneratorType::HoldVolEnv => region.env_hold = gen.amount.as_i16().copied(),
+                    GeneratorType::DecayVolEnv => region.env_decay = gen.amount.as_i16().copied(),
                     GeneratorType::SustainVolEnv => {
-                        region.env_sustain = gen
-                            .amount
-                            .as_i16()
-                            .map(|v| 10f32.powf(-(*v as f32) / 200.0) * 100.0)
+                        region.env_sustain = gen.amount.as_i16().copied()
                     }
                     GeneratorType::ReleaseVolEnv => {
-                        region.env_release =
-                            gen.amount.as_i16().map(|v| 2f32.powf(*v as f32 / 1200.0))
+                        region.env_release = gen.amount.as_i16().copied()
                     }
                     GeneratorType::KeyRange => {
                         let range = gen.amount.as_range().copied();
@@ -112,12 +112,32 @@ impl Sf2Zone {
                             _ => LoopMode::NoLoop,
                         })
                     }
+                    GeneratorType::Keynum => {
+                        region.fixed_key = gen.amount.as_i16().map(|v| (*v).clamp(0, 127) as u8)
+                    }
+                    GeneratorType::Velocity => {
+                        region.fixed_velocity =
+                            gen.amount.as_i16().map(|v| (*v).clamp(0, 127) as u8)
+                    }
+                    GeneratorType::ScaleTuning => {
+                        region.scale_tuning = gen.amount.as_i16().copied()
+                    }
+                    GeneratorType::ExclusiveClass => {
+                        region.exclusive_class = gen
+                            .amount
+                            .as_i16()
+                            .map(|v| (*v).clamp(0, u8::MAX as i16) as u8)
+                    }
                     GeneratorType::OverridingRootKey => {
                         region.root_override = gen.amount.as_i16().copied()
                     }
                     _ => {}
                 }
             }
+
+            region
+                .note_modulators
+                .extend(zone.mod_list.iter().filter_map(Sf2NoteModulator::parse));
 
             if i == 0 && region.index.is_none() {
                 global_region = region;

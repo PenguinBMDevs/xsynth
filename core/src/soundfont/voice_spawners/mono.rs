@@ -32,6 +32,7 @@ pub struct MonoSampledVoiceSpawner<S: 'static + Simd + Send + Sync> {
     volume_envelope_params: Arc<EnvelopeParameters>,
     samples: Arc<[Arc<[f32]>]>,
     interpolator: Interpolator,
+    exclusive_class: Option<u8>,
     vel: u8,
     stream_params: AudioStreamParams,
     _s: PhantomData<S>,
@@ -62,6 +63,7 @@ impl<S: Simd + Send + Sync> MonoSampledVoiceSpawner<S> {
             volume_envelope_params: params.envelope.clone(),
             samples: params.sample.clone(),
             interpolator: params.interpolator,
+            exclusive_class: params.exclusive_class,
             vel,
             stream_params,
             _s: PhantomData,
@@ -175,7 +177,7 @@ impl<S: Simd + Send + Sync> MonoSampledVoiceSpawner<S> {
         Gen: 'static + SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
     {
         let flattened = SIMDMonoVoice::new(gen);
-        let base = VoiceBase::new(self.vel, flattened);
+        let base = VoiceBase::new(self.vel, self.exclusive_class(), flattened);
 
         Box::new(base)
     }
@@ -206,5 +208,9 @@ impl<S: Simd + Send + Sync> MonoSampledVoiceSpawner<S> {
 impl<S: 'static + Sync + Send + Simd> VoiceSpawner for MonoSampledVoiceSpawner<S> {
     fn spawn_voice(&self, control: &VoiceControlData) -> Box<dyn Voice> {
         self.begin_voice(control)
+    }
+
+    fn exclusive_class(&self) -> Option<u8> {
+        self.exclusive_class
     }
 }
