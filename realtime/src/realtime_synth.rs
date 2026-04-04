@@ -43,6 +43,12 @@ pub enum RealtimeSynthError {
     #[error("failed to spawn realtime channel thread: {0}")]
     ChannelThreadSpawn(#[source] io::Error),
 
+    #[error("failed to spawn realtime stream thread: {0}")]
+    StreamThreadSpawn(#[source] io::Error),
+
+    #[error("realtime stream thread terminated during startup")]
+    StreamThreadInit,
+
     #[error("failed to create realtime event sender: {0}")]
     EventSenderInit(#[source] io::Error),
 
@@ -106,7 +112,7 @@ impl RealtimeSynthStatsReader {
 struct RealtimeSynthThreadSharedData {
     buffered_renderer: Arc<Mutex<BufferedRenderer>>,
 
-    stream: Stream,
+    stream_control: crossbeam_channel::Sender<StreamCommand>,
 
     event_senders: RealtimeEventSender,
 }
@@ -122,11 +128,18 @@ struct PreparedRealtimeChannels {
 /// A realtime MIDI synthesizer using an audio device for output.
 pub struct RealtimeSynth {
     data: Option<RealtimeSynthThreadSharedData>,
+    stream_owner: Option<thread::JoinHandle<()>>,
     join_handles: Vec<thread::JoinHandle<()>>,
 
     stats: RealtimeSynthStats,
 
     stream_params: AudioStreamParams,
+}
+
+enum StreamCommand {
+    Pause(crossbeam_channel::Sender<Result<(), PauseStreamError>>),
+    Resume(crossbeam_channel::Sender<Result<(), PlayStreamError>>),
+    Shutdown,
 }
 
 impl RealtimeSynth {
@@ -214,9 +227,8 @@ impl RealtimeSynth {
             )
             .map_err(RealtimeSynthError::BufferedRendererThreadSpawn)?,
         ));
-        let stream = build_output_stream(device, stream_config, buffered.clone())?;
-
-        stream.play()?;
+        let (stream_control, stream_owner) =
+            spawn_stream_thread(device.clone(), stream_config, buffered.clone())?;
 
         let max_nps = Arc::new(ReadWriteAtomicU64::new(10000));
 
@@ -226,8 +238,9 @@ impl RealtimeSynth {
 
                 event_senders: RealtimeEventSender::new(senders, max_nps, config.ignore_range)
                     .map_err(RealtimeSynthError::EventSenderInit)?,
-                stream,
+                stream_control,
             }),
+            stream_owner: Some(stream_owner),
             join_handles,
 
             stats,
@@ -282,14 +295,26 @@ impl RealtimeSynth {
 
     /// Pauses the playback of the audio output device.
     pub fn pause(&mut self) -> Result<(), PauseStreamError> {
-        let data = self.data.as_mut().unwrap();
-        data.stream.pause()
+        let data = self.data.as_ref().unwrap();
+        let (sender, receiver) = bounded(1);
+        if data.stream_control.send(StreamCommand::Pause(sender)).is_err() {
+            return Err(PauseStreamError::DeviceNotAvailable);
+        }
+        receiver
+            .recv()
+            .unwrap_or(Err(PauseStreamError::DeviceNotAvailable))
     }
 
     /// Resumes the playback of the audio output device.
     pub fn resume(&mut self) -> Result<(), PlayStreamError> {
-        let data = self.data.as_mut().unwrap();
-        data.stream.play()
+        let data = self.data.as_ref().unwrap();
+        let (sender, receiver) = bounded(1);
+        if data.stream_control.send(StreamCommand::Resume(sender)).is_err() {
+            return Err(PlayStreamError::DeviceNotAvailable);
+        }
+        receiver
+            .recv()
+            .unwrap_or(Err(PlayStreamError::DeviceNotAvailable))
     }
 
     /// Changes the length of the buffer reader.
@@ -461,11 +486,74 @@ fn build_output_stream_for<T: SizedSample + ConvertSample>(
     )?)
 }
 
+fn spawn_stream_thread(
+    device: Device,
+    stream_config: SupportedStreamConfig,
+    buffered: Arc<Mutex<BufferedRenderer>>,
+) -> Result<
+    (
+        crossbeam_channel::Sender<StreamCommand>,
+        thread::JoinHandle<()>,
+    ),
+    RealtimeSynthError,
+> {
+    let (command_sender, command_receiver) = unbounded();
+    let (ready_sender, ready_receiver) = bounded(1);
+    let join_handle = thread::Builder::new()
+        .name("xsynth_stream_owner".to_string())
+        .spawn(move || {
+            let stream = match build_output_stream(&device, stream_config, buffered) {
+                Ok(stream) => stream,
+                Err(err) => {
+                    let _ = ready_sender.send(Err(err));
+                    return;
+                }
+            };
+            if let Err(err) = stream.play() {
+                let _ = ready_sender.send(Err(err.into()));
+                return;
+            }
+            if ready_sender.send(Ok(())).is_err() {
+                return;
+            }
+
+            while let Ok(command) = command_receiver.recv() {
+                match command {
+                    StreamCommand::Pause(reply) => {
+                        let _ = reply.send(stream.pause());
+                    }
+                    StreamCommand::Resume(reply) => {
+                        let _ = reply.send(stream.play());
+                    }
+                    StreamCommand::Shutdown => break,
+                }
+            }
+        })
+        .map_err(RealtimeSynthError::StreamThreadSpawn)?;
+
+    match ready_receiver.recv() {
+        Ok(Ok(())) => Ok((command_sender, join_handle)),
+        Ok(Err(err)) => {
+            let _ = join_handle.join();
+            Err(err)
+        }
+        Err(_) => {
+            let _ = join_handle.join();
+            Err(RealtimeSynthError::StreamThreadInit)
+        }
+    }
+}
+
 impl Drop for RealtimeSynth {
     fn drop(&mut self) {
         let data = self.data.take().unwrap();
-        // data.stream.pause().unwrap();
+        let _ = data.stream_control.send(StreamCommand::Shutdown);
         drop(data);
+        if let Some(handle) = self.stream_owner.take() {
+            if handle.join().is_err() {
+                eprintln!("xsynth-realtime: stream owner thread panicked during shutdown");
+            }
+        }
         for handle in self.join_handles.drain(..) {
             if handle.join().is_err() {
                 eprintln!("xsynth-realtime: channel handler thread panicked during shutdown");
@@ -498,4 +586,15 @@ impl ConvertSample for u16 {
 
 fn calculate_render_size(sample_rate: u32, buffer_ms: f64) -> usize {
     (sample_rate as f64 * buffer_ms / 1000.0) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RealtimeSynth;
+
+    #[test]
+    fn realtime_synth_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<RealtimeSynth>();
+    }
 }
