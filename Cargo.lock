@@ -1147,9 +1147,9 @@ dependencies = [
 
 [[package]]
 name = "paste"
-version = "1.0.12"
+version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f746c4065a8fa3fe23974dd82f15431cc8d40779821001404d10d2e79ca7d79"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "peeking_take_while"
@@ -1536,9 +1536,9 @@ checksum = "43b2853a4d09f215c24cc5489c992ce46052d359b5109343cbafbf26bc62f8a3"
 
 [[package]]
 name = "simdeez"
-version = "2.0.0-dev3"
+version = "3.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f03e3cf4b84e534adb37350c2ad56fb27e58d10eb2fe8daffc26103b8ae39d3f"
+checksum = "35bc92272e09cdb506befe0c48f5f865fdda52e77bbe1738f74bed79f29c4733"
 dependencies = [
  "cfg-if",
  "paste",
