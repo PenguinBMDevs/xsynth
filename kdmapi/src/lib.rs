@@ -392,7 +392,7 @@ cfg_if::cfg_if! {
 
     #[derive(Clone, Copy)]
     struct CallbackState {
-        dummy_device: HMIDI,
+        dummy_device: usize,
         callback_instance: DWORD_PTR,
         callback: CallbackFunction,
         callback_type: DWORD,
@@ -402,7 +402,7 @@ cfg_if::cfg_if! {
         static CALLBACK_STATE: OnceLock<Mutex<CallbackState>> = OnceLock::new();
         CALLBACK_STATE.get_or_init(|| {
             Mutex::new(CallbackState {
-                dummy_device: std::ptr::null_mut(),
+                dummy_device: 0,
                 callback_instance: 0,
                 callback: def_callback,
                 callback_type: 0,
@@ -425,13 +425,15 @@ cfg_if::cfg_if! {
         OMCM: DWORD,
     ) -> u32 {
         let mut state = callback_state().lock().unwrap();
-        state.dummy_device = OMHM;
+        state.dummy_device = OMHM as usize;
         state.callback = OMCB;
         state.callback_instance = OMI;
         state.callback_type = OMCM;
 
-        #[allow(clippy::fn_address_comparisons)]
-        if OMCM == CALLBACK_WINDOW && state.callback != def_callback && IsWindow(state.callback as HWND) != 0 {
+        if OMCM == CALLBACK_WINDOW
+            && !std::ptr::fn_addr_eq(state.callback, def_callback as CallbackFunction)
+            && IsWindow(state.callback as HWND) != 0
+        {
             return 0;
         }
 
