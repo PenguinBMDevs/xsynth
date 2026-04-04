@@ -120,8 +120,13 @@ pub(super) struct SoundfontInstrument {
 /// ## SF2 specification support
 /// ### Generators
 /// - `startAddrsOffset`
+/// - `endAddrsOffset`
 /// - `startloopAddrsOffset`
 /// - `endloopAddrsOffset`
+/// - `startAddrsCoarseOffset`
+/// - `endAddrsCoarseOffset`
+/// - `startloopAddrsCoarseOffset`
+/// - `endloopAddrsCoarseOffset`
 /// - `initialFilterFc`
 /// - `initialFilterQ`
 /// - `pan`
@@ -140,9 +145,29 @@ pub(super) struct SoundfontInstrument {
 /// - `sampleID`
 /// - `sampleModes`
 /// - `overridingRootKey`
+/// - `scaleTuning`
+/// - `exclusiveClass`
+/// - `keynum`
+/// - `velocity`
+/// - `keynumToVolEnvHold`
+/// - `keynumToVolEnvDecay`
 ///
 /// ### Modulators
-/// None
+/// XSynth intentionally supports a baked subset of SF2 modulators so note-on
+/// articulation can be resolved at soundfont load time without adding runtime
+/// voice stages. Currently supported:
+/// - sources: key number and note-on velocity
+/// - curves: linear, concave, convex, and switch
+/// - transforms: linear and absolute
+/// - destinations: attenuation, filter cutoff, pan, volume envelope timings,
+///   and static pitch offsets
+///
+/// The following SF2 features are intentionally not supported in the runtime
+/// engine because they would add significant hot-path and binary-size cost:
+/// - modulation envelope generators and destinations
+/// - modulation LFO / vibrato LFO generators and destinations
+/// - generic CC / aftertouch / pitch-wheel-driven SF2 modulators
+/// - chorus and reverb send behavior
 pub struct SampleSoundfont {
     instruments: Vec<SoundfontInstrument>,
     stream_params: AudioStreamParams,

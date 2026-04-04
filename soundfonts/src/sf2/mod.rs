@@ -26,6 +26,13 @@ pub enum Sf2ParseError {
 }
 
 /// Structure that holds the generator and modulator parameters of an SF2 region.
+///
+/// XSynth's SF2 support is intentionally performance-first. Static region data
+/// and a practical subset of note-on modulators are resolved during load so the
+/// realtime engine can keep using pre-specialized voice paths. Runtime SF2
+/// modulation features such as modulation envelopes, LFO-driven modulation,
+/// CC/aftertouch-driven modulators, and chorus/reverb sends are intentionally
+/// omitted.
 #[derive(Clone, Debug)]
 pub struct Sf2Region {
     pub sample: Arc<[Arc<[f32]>]>,
@@ -85,6 +92,11 @@ pub struct Sf2Preset {
 }
 
 /// Parses an SF2 file and returns its presets in a vector.
+///
+/// Supported behavior includes sample offsets/loops, stereo links, static
+/// filter and tuning generators, volume envelope generators, exclusive class,
+/// key/velocity ranges, and a baked subset of key/velocity note-on modulators.
+/// Full runtime SF2 modulation is intentionally outside scope.
 pub fn load_soundfont(
     sf2_path: impl Into<PathBuf>,
     sample_rate: u32,

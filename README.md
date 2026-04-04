@@ -12,8 +12,23 @@
 - [`clib`](https://github.com/BlackMIDIDevs/xsynth/tree/master/clib): C/C++ bindings for XSynth.
 - [`soundfonts`](https://github.com/BlackMIDIDevs/xsynth/tree/master/soundfonts): A module to parse soundfonts to be used in XSynth.
 - [`realtime`](https://github.com/BlackMIDIDevs/xsynth/tree/master/realtime): The real-time rendering module within XSynth.
-- [`render`](https://github.com/BlackMIDIDevs/xsynth/tree/master/render): A command line utility for rendering MIDIs to audio using XSynth.
-- [`kdmapi`](https://github.com/BlackMIDIDevs/xsynth/tree/master/render): A cdylib wrapper around XSynth to act as a drop in replacement for OmniMIDI/KDMAPI.
+- [`render`](https://github.com/BlackMIDIDevs/xsynth/tree/master/render): Offline rendering support, exposed both as a reusable library and a command line utility for rendering MIDIs to audio using XSynth.
+- [`kdmapi`](https://github.com/BlackMIDIDevs/xsynth/tree/master/kdmapi): A cdylib wrapper around XSynth to act as a drop in replacement for OmniMIDI/KDMAPI.
+
+## SF2 Support
+
+XSynth aims for high-performance practical SF2 playback rather than full
+SoundFont 2 spec emulation.
+
+Supported today:
+- static sample-region playback, including offsets, loop points, stereo links, root key, tuning, scale tuning, key/velocity ranges, fixed key/velocity, filter cutoff/Q, volume envelope generators, and exclusive class
+- a baked subset of note-on modulators, resolved at soundfont load time, covering key/velocity sources with linear/concave/convex/switch curves for practical destinations such as attenuation, filter cutoff, pan, volume envelope timings, and static pitch offsets
+
+Intentionally out of scope for performance and binary-size reasons:
+- modulation envelope generators and their destinations
+- modulation LFO / vibrato LFO generators and destinations
+- generic runtime SF2 modulators driven by CCs, aftertouch, or pitch wheel
+- SF2 chorus and reverb send behavior
 
 ## Demos
 
