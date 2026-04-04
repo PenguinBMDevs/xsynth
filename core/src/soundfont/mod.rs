@@ -304,7 +304,7 @@ impl SampleSoundfont {
                     }
 
                     let pan = ((region.pan as f32 / 100.0) + 1.0) / 2.0;
-                    let volume = db_to_amp(region.volume as f32);
+                    let volume = db_to_amp(region.volume as f32) * (vel as f32 / 127.0).powi(2);
 
                     let sample_rate = samples[&params].1;
 

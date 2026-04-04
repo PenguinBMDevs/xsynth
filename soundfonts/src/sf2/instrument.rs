@@ -11,7 +11,7 @@ impl Sf2Instrument {
         let mut out: Vec<Self> = Vec::new();
 
         for instrument in instruments {
-            let regions = Sf2Zone::parse(instrument.zones);
+            let regions = Sf2Zone::parse(instrument.zones, true);
 
             out.push(Sf2Instrument { regions });
         }

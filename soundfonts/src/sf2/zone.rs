@@ -2,7 +2,7 @@ use crate::LoopMode;
 use soundfont::{raw::GeneratorType, Zone};
 use std::ops::RangeInclusive;
 
-use super::Sf2NoteModulator;
+use super::{default_note_modulators, Sf2NoteModulator};
 
 #[derive(Default, Clone, Debug)]
 pub struct Sf2Zone {
@@ -25,6 +25,8 @@ pub struct Sf2Zone {
     pub env_decay: Option<i16>,
     pub env_sustain: Option<i16>,
     pub env_release: Option<i16>,
+    pub keynum_to_vol_env_hold: Option<i16>,
+    pub keynum_to_vol_env_decay: Option<i16>,
     pub velrange: Option<RangeInclusive<u8>>,
     pub keyrange: Option<RangeInclusive<u8>>,
     pub attenuation: Option<i16>,
@@ -39,9 +41,12 @@ pub struct Sf2Zone {
 }
 
 impl Sf2Zone {
-    pub fn parse(zones: Vec<Zone>) -> Vec<Self> {
+    pub fn parse(zones: Vec<Zone>, instrument_level: bool) -> Vec<Self> {
         let mut regions: Vec<Sf2Zone> = Vec::new();
         let mut global_region = Sf2Zone::default();
+        if instrument_level {
+            global_region.note_modulators = default_note_modulators().to_vec();
+        }
 
         for (i, zone) in zones.iter().enumerate() {
             let mut region = global_region.clone();
@@ -90,6 +95,12 @@ impl Sf2Zone {
                     GeneratorType::ReleaseVolEnv => {
                         region.env_release = gen.amount.as_i16().copied()
                     }
+                    GeneratorType::KeynumToVolEnvHold => {
+                        region.keynum_to_vol_env_hold = gen.amount.as_i16().copied()
+                    }
+                    GeneratorType::KeynumToVolEnvDecay => {
+                        region.keynum_to_vol_env_decay = gen.amount.as_i16().copied()
+                    }
                     GeneratorType::KeyRange => {
                         let range = gen.amount.as_range().copied();
                         region.keyrange = range.map(|v| v.low..=v.high)
@@ -135,9 +146,16 @@ impl Sf2Zone {
                 }
             }
 
-            region
-                .note_modulators
-                .extend(zone.mod_list.iter().filter_map(Sf2NoteModulator::parse));
+            for modulator in zone
+                .mod_list
+                .iter()
+                .filter_map(Sf2NoteModulator::parse_zone)
+            {
+                region
+                    .note_modulators
+                    .retain(|existing| !modulator.suppresses_default(existing));
+                region.note_modulators.push(modulator);
+            }
 
             if i == 0 && region.index.is_none() {
                 global_region = region;

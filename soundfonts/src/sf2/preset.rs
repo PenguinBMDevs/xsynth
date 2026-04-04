@@ -18,7 +18,7 @@ impl Sf2ParsedPreset {
         let mut presets_parsed: Vec<Sf2ParsedPreset> = Vec::new();
 
         for preset in presets {
-            let zones = Sf2Zone::parse(preset.zones);
+            let zones = Sf2Zone::parse(preset.zones, false);
 
             presets_parsed.push(Sf2ParsedPreset {
                 preset: preset.header.preset,
@@ -181,6 +181,14 @@ impl Sf2ParsedPreset {
                                     .or(zone.scale_tuning)
                                     .unwrap_or(100),
                                 exclusive_class: subzone.exclusive_class.or(zone.exclusive_class),
+                                keynum_to_vol_env_hold: sum_i16(
+                                    zone.keynum_to_vol_env_hold,
+                                    subzone.keynum_to_vol_env_hold,
+                                ),
+                                keynum_to_vol_env_decay: sum_i16(
+                                    zone.keynum_to_vol_env_decay,
+                                    subzone.keynum_to_vol_env_decay,
+                                ),
                                 cutoff_cents,
                                 raw_envelope,
                                 note_modulators: Arc::from(note_modulators),

@@ -11,7 +11,9 @@ mod sample;
 mod zone;
 
 pub use modulator::Sf2NoteParams;
-pub(crate) use modulator::{default_raw_envelope, Sf2NoteModulator, Sf2RawEnvelope};
+pub(crate) use modulator::{
+    default_note_modulators, default_raw_envelope, Sf2NoteModulator, Sf2RawEnvelope,
+};
 
 /// Errors that can be generated when loading an SF2 file.
 #[derive(Error, Debug, Clone)]
@@ -45,6 +47,8 @@ pub struct Sf2Region {
     pub coarse_tune: i16,
     pub scale_tuning: i16,
     pub exclusive_class: Option<u8>,
+    pub(crate) keynum_to_vol_env_hold: i16,
+    pub(crate) keynum_to_vol_env_decay: i16,
     pub(crate) cutoff_cents: Option<i32>,
     pub(crate) raw_envelope: Sf2RawEnvelope,
     pub(crate) note_modulators: Arc<[Sf2NoteModulator]>,
