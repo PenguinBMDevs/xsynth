@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     channel::{ChannelAudioEvent, ChannelConfigEvent, ChannelEvent, VoiceChannel},
-    helpers::{fast_zero_fill, prepapre_cache_vec, sum_simd},
+    helpers::{fast_zero_fill, sum_simd},
     AudioPipe, AudioStreamParams,
 };
 

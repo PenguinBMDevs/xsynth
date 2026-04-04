@@ -139,6 +139,7 @@ impl Sf2ParsedPreset {
             // Second pass -> Stereo sample linking
             // Build index for O(1) stereo pair lookup
             use std::collections::HashMap;
+            #[allow(clippy::type_complexity)]
             let mut stereo_pairs: HashMap<(i8, i16, u8, u8, u8, u8), Vec<usize>> =
                 HashMap::new();
             for (i, (region, sample)) in regions.iter().enumerate() {

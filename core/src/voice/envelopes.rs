@@ -789,6 +789,11 @@ mod tests {
             from + (to - from) * fac
         }
 
+        fn lerp_concave(from: f32, to: f32, fac: f32) -> f32 {
+            let mult = (1. - fac).powi(8);
+            (from - to) * mult + to
+        }
+
         fn lerp_to_zero_curve(from: f32, fac: f32) -> f32 {
             let mult = (1. - fac).powi(8);
             mult * from
@@ -829,7 +834,7 @@ mod tests {
                     expected_vec.push(lerp(0.5, 1.0, i as f32 / 15.0));
                 }
                 for i in 0..17 {
-                    expected_vec.push(lerp(1.0, 0.4, i as f32 / 17.0));
+                    expected_vec.push(lerp_concave(1.0, 0.4, i as f32 / 17.0));
                 }
                 for _ in 0..16 {
                     expected_vec.push(0.4);

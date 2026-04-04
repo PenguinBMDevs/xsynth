@@ -1,3 +1,4 @@
+#![allow(clippy::uninit_vec, clippy::excessive_precision, clippy::needless_range_loop)]
 use std::sync::Arc;
 
 /// Fast linear interpolation resampler.
@@ -9,7 +10,7 @@ pub fn resample_fast(input: &[f32], from_rate: f32, to_rate: f32) -> Arc<[f32]> 
 
     let ratio = (from_rate / to_rate) as f64;
     let output_len = ((input.len() - 1) as f64 / ratio) as usize + 1;
-    let mut output: Vec<f32> = Vec::with_capacity(output_len);
+    #[allow(clippy::uninit_vec)] let mut output: Vec<f32> = Vec::with_capacity(output_len);
     unsafe { output.set_len(output_len); }
     let input_len = input.len();
     let mut src_pos = 0.0f64;
@@ -40,7 +41,7 @@ pub fn resample_i16(input: &[i16], from_rate: f32, to_rate: f32) -> Arc<[f32]> {
 
     let ratio = (from_rate / to_rate) as f64;
     let output_len = ((input.len() - 1) as f64 / ratio) as usize + 1;
-    let mut output: Vec<f32> = Vec::with_capacity(output_len);
+    #[allow(clippy::uninit_vec)] let mut output: Vec<f32> = Vec::with_capacity(output_len);
     unsafe { output.set_len(output_len); }
     let input_len = input.len();
     let mut src_pos = 0.0f64;

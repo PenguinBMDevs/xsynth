@@ -284,7 +284,7 @@ cfg_if::cfg_if! {
         CALLBACK_INSTANCE = OMI;
         CALLBACK_TYPE = OMCM;
 
-        #[allow(clippy::fn_address_comparisons)]
+        #[allow(unpredictable_function_pointer_comparisons)]
         if OMCM == CALLBACK_WINDOW && CALLBACK != def_callback && IsWindow(CALLBACK as HWND) != 0 {
             return 0;
         }

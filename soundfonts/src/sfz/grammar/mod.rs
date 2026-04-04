@@ -1,3 +1,4 @@
+#![allow(clippy::enum_variant_names)]
 #![allow(clippy::manual_strip)]
 #![allow(clippy::uninlined_format_args)]
 

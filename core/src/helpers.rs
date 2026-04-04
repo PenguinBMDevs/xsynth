@@ -33,9 +33,9 @@ pub fn fast_zero_fill(vec: &mut Vec<f32>, len: usize) {
     }
 }
 
-/// Thread-local buffer pool for voice rendering to avoid allocations
+// Thread-local buffer pool for voice rendering to avoid allocations
 thread_local! {
-    static VOICE_RENDER_BUFFERS: RefCell<Vec<Vec<f32>>> = RefCell::new(Vec::new());
+    static VOICE_RENDER_BUFFERS: RefCell<Vec<Vec<f32>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Get a buffer from the thread-local pool or create a new one

@@ -28,6 +28,7 @@ pub use nearest::*;
 pub trait BufferSampler: Send + Sync {
     fn get(&self, pos: usize) -> f32;
     fn length(&self) -> usize;
+    fn ptr(&self) -> *const f32;
 }
 
 pub trait SIMDSampleGrabber<S: Simd>: Send + Sync {
@@ -60,6 +61,11 @@ impl BufferSampler for F32BufferSampler {
     fn length(&self) -> usize {
         self.0.len()
     }
+
+    #[inline(always)]
+    fn ptr(&self) -> *const f32 {
+        self.0.as_ptr()
+    }
 }
 
 // Generalized enum sampler
@@ -88,6 +94,13 @@ impl BufferSampler for BufferSamplers {
             BufferSamplers::F32(sampler) => sampler.length(),
         }
     }
+
+    #[inline(always)]
+    fn ptr(&self) -> *const f32 {
+        match self {
+            BufferSamplers::F32(sampler) => sampler.ptr(),
+        }
+    }
 }
 
 // Enum sampler reader
@@ -96,6 +109,18 @@ pub trait SampleReader: Send + Sync {
     fn get(&mut self, pos: usize) -> f32;
     fn is_past_end(&self, pos: usize) -> bool;
     fn signal_release(&mut self);
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn get_simd_avx2(
+        &mut self,
+        indexes: std::arch::x86_64::__m256i,
+    ) -> std::arch::x86_64::__m256;
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe fn get_simd_neon(
+        &mut self,
+        indexes: std::arch::aarch64::int32x4_t,
+    ) -> std::arch::aarch64::float32x4_t;
 }
 
 pub struct SampleReaderNoLoop<Sampler: BufferSampler> {
@@ -129,6 +154,37 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderNoLoop<Sampler> {
     }
 
     fn signal_release(&mut self) {}
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    unsafe fn get_simd_avx2(
+        &mut self,
+        indexes: std::arch::x86_64::__m256i,
+    ) -> std::arch::x86_64::__m256 {
+        use std::arch::x86_64::*;
+        let offset = _mm256_set1_epi32(self.offset as i32);
+        let pos = _mm256_add_epi32(indexes, offset);
+        _mm256_i32gather_ps(self.buffer.ptr(), pos, 4)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    unsafe fn get_simd_neon(
+        &mut self,
+        indexes: std::arch::aarch64::int32x4_t,
+    ) -> std::arch::aarch64::float32x4_t {
+        use std::arch::aarch64::*;
+        let mut idx = [0i32; 4];
+        let offset = vdupq_n_s32(self.offset as i32);
+        vst1q_s32(idx.as_mut_ptr(), vaddq_s32(indexes, offset));
+
+        let mut res = [0.0f32; 4];
+        res[0] = self.buffer.get(idx[0] as usize);
+        res[1] = self.buffer.get(idx[1] as usize);
+        res[2] = self.buffer.get(idx[2] as usize);
+        res[3] = self.buffer.get(idx[3] as usize);
+        vld1q_f32(res.as_ptr())
+    }
 }
 
 pub struct SampleReaderLoop<Sampler: BufferSampler> {
@@ -167,6 +223,70 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoop<Sampler> {
     }
 
     fn signal_release(&mut self) {}
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    unsafe fn get_simd_avx2(
+        &mut self,
+        indexes: std::arch::x86_64::__m256i,
+    ) -> std::arch::x86_64::__m256 {
+        use std::arch::x86_64::*;
+        let offset = _mm256_set1_epi32(self.offset as i32);
+        let pos = _mm256_add_epi32(indexes, offset);
+
+        let end = _mm256_set1_epi32(self.loop_end as i32);
+        let start = _mm256_set1_epi32(self.loop_start as i32);
+        let loop_len = _mm256_set1_ps((self.loop_end - self.loop_start) as f32);
+
+        let cmp = _mm256_cmpgt_epi32(pos, end);
+
+        let mask_cmp = _mm256_movemask_epi8(cmp);
+        if mask_cmp == 0 {
+            _mm256_i32gather_ps(self.buffer.ptr(), pos, 4)
+        } else {
+            let a = _mm256_sub_epi32(_mm256_sub_epi32(pos, end), _mm256_set1_epi32(1));
+            let a_f32 = _mm256_cvtepi32_ps(a);
+            let div = _mm256_div_ps(a_f32, loop_len);
+            let div_i32 = _mm256_cvttps_epi32(div);
+
+            let mul = _mm256_mullo_epi32(
+                div_i32,
+                _mm256_set1_epi32((self.loop_end - self.loop_start) as i32),
+            );
+            let rem = _mm256_sub_epi32(a, mul);
+            let wrapped_pos = _mm256_add_epi32(rem, start);
+
+            let final_pos = _mm256_blendv_epi8(pos, wrapped_pos, cmp);
+            _mm256_i32gather_ps(self.buffer.ptr(), final_pos, 4)
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    unsafe fn get_simd_neon(
+        &mut self,
+        indexes: std::arch::aarch64::int32x4_t,
+    ) -> std::arch::aarch64::float32x4_t {
+        use std::arch::aarch64::*;
+        let mut idx = [0i32; 4];
+        let offset = vdupq_n_s32(self.offset as i32);
+        vst1q_s32(idx.as_mut_ptr(), vaddq_s32(indexes, offset));
+
+        let mut res = [0.0f32; 4];
+        let end = self.loop_end as i32;
+        let start = self.loop_start as i32;
+        let loop_len = (end - start).max(1); // prevent div by zero
+
+        for i in 0..4 {
+            let mut pos = idx[i];
+            if pos > end {
+                pos = (pos - end - 1) % loop_len + start;
+            }
+            res[i] = self.buffer.get(pos as usize);
+        }
+
+        vld1q_f32(res.as_ptr())
+    }
 }
 
 pub struct SampleReaderLoopSustain<Sampler: BufferSampler> {
@@ -202,16 +322,14 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoopSustain<Sampler> {
 
         let final_pos = if !self.is_released {
             if pos > end && end > start {
-                // Calculate wrapped position within the loop
                 let loop_len = end - start;
                 let wrapped = start + (pos - end - 1) % loop_len;
-                self.last = pos - self.offset; // Store original position for release phase
+                self.last = pos - self.offset;
                 wrapped
             } else {
                 pos
             }
         } else {
-            // After release, continue from where we left off
             let release_pos = pos - self.last;
             release_pos
         };
@@ -223,9 +341,8 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoopSustain<Sampler> {
         if !self.is_released {
             return false;
         }
-        
+
         if let Some(len) = self.length {
-            // Calculate effective position after accounting for loop
             let effective_pos = if self.last > self.offset {
                 pos + self.last - self.offset
             } else {
@@ -240,9 +357,100 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoopSustain<Sampler> {
     fn signal_release(&mut self) {
         if !self.is_released {
             self.is_released = true;
-            // Store the current position when released for smooth transition
             self.last = self.last.max(self.offset);
         }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    unsafe fn get_simd_avx2(
+        &mut self,
+        indexes: std::arch::x86_64::__m256i,
+    ) -> std::arch::x86_64::__m256 {
+        use std::arch::x86_64::*;
+        let offset = _mm256_set1_epi32(self.offset as i32);
+        let pos = _mm256_add_epi32(indexes, offset);
+
+        if !self.is_released {
+            let end = _mm256_set1_epi32(self.loop_end as i32);
+            let start = _mm256_set1_epi32(self.loop_start as i32);
+
+            let cmp_pos = _mm256_cmpgt_epi32(pos, end);
+            let cmp_end = _mm256_cmpgt_epi32(end, start);
+            let cmp = _mm256_and_si256(cmp_pos, cmp_end);
+
+            let mask_cmp = _mm256_movemask_epi8(cmp);
+            if mask_cmp == 0 {
+                _mm256_i32gather_ps(self.buffer.ptr(), pos, 4)
+            } else {
+                let loop_len_f32 =
+                    _mm256_set1_ps((self.loop_end.saturating_sub(self.loop_start)) as f32);
+                let loop_len_i32 =
+                    _mm256_set1_epi32((self.loop_end.saturating_sub(self.loop_start)) as i32);
+
+                let a = _mm256_sub_epi32(_mm256_sub_epi32(pos, end), _mm256_set1_epi32(1));
+                let a_f32 = _mm256_cvtepi32_ps(a);
+                let div = _mm256_div_ps(a_f32, loop_len_f32);
+                let div_i32 = _mm256_cvttps_epi32(div);
+
+                let mul = _mm256_mullo_epi32(div_i32, loop_len_i32);
+                let rem = _mm256_sub_epi32(a, mul);
+                let wrapped_pos = _mm256_add_epi32(rem, start);
+
+                let max_idx = _mm256_extract_epi32(pos, 7);
+                if max_idx > self.loop_end as i32 && self.loop_end > self.loop_start {
+                    self.last = (max_idx - self.offset as i32) as usize;
+                }
+
+                let final_pos = _mm256_blendv_epi8(pos, wrapped_pos, cmp);
+                _mm256_i32gather_ps(self.buffer.ptr(), final_pos, 4)
+            }
+        } else {
+            let last_vec = _mm256_set1_epi32(self.last as i32);
+            let release_pos = _mm256_sub_epi32(pos, last_vec);
+            _mm256_i32gather_ps(self.buffer.ptr(), release_pos, 4)
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    unsafe fn get_simd_neon(
+        &mut self,
+        indexes: std::arch::aarch64::int32x4_t,
+    ) -> std::arch::aarch64::float32x4_t {
+        use std::arch::aarch64::*;
+        let mut idx = [0i32; 4];
+        let offset = vdupq_n_s32(self.offset as i32);
+        vst1q_s32(idx.as_mut_ptr(), vaddq_s32(indexes, offset));
+
+        let mut res = [0.0f32; 4];
+        let end = self.loop_end as i32;
+        let start = self.loop_start as i32;
+
+        if !self.is_released {
+            let loop_len = (end - start).max(1);
+            let mut max_idx = 0;
+
+            for i in 0..4 {
+                let mut pos = idx[i];
+                max_idx = max_idx.max(pos);
+
+                if pos > end && end > start {
+                    pos = start + (pos - end - 1) % loop_len;
+                }
+                res[i] = self.buffer.get(pos as usize);
+            }
+
+            if max_idx > end && end > start {
+                self.last = (max_idx - self.offset as i32) as usize;
+            }
+        } else {
+            for i in 0..4 {
+                res[i] = self.buffer.get((idx[i] - self.last as i32) as usize);
+            }
+        }
+
+        vld1q_f32(res.as_ptr())
     }
 }
 
@@ -365,10 +573,55 @@ where
             let mut indexes = S::Vi32::zeroes();
             let mut fractionals = S::Vf32::zeroes();
 
+            #[cfg(target_arch = "x86_64")]
+            {
+                if S::Vf32::WIDTH == 8 {
+                    use std::arch::x86_64::*;
+                    unsafe {
+                        let speed_m256 = std::ptr::read(&speed as *const _ as *const __m256);
+
+                        let mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
+                        let abs_speed = _mm256_and_ps(speed_m256, mask);
+                        let clamped_speed = _mm256_max_ps(abs_speed, _mm256_set1_ps(0.0001));
+
+                        let mut x = clamped_speed;
+                        let shifted1 =
+                            _mm256_castsi256_ps(_mm256_slli_si256(_mm256_castps_si256(x), 4));
+                        x = _mm256_add_ps(x, shifted1);
+                        let shifted2 =
+                            _mm256_castsi256_ps(_mm256_slli_si256(_mm256_castps_si256(x), 8));
+                        x = _mm256_add_ps(x, shifted2);
+
+                        let cross = _mm256_permute2f128_ps(x, x, 0x08);
+                        let cross = _mm256_shuffle_ps(cross, cross, 0xFF);
+                        x = _mm256_add_ps(x, cross);
+
+                        let indices = _mm256_set_epi32(6, 5, 4, 3, 2, 1, 0, 0);
+                        let shifted_x = _mm256_permutevar8x32_ps(x, indices);
+                        let exclusive = _mm256_blend_ps(shifted_x, _mm256_setzero_ps(), 1);
+
+                        let t_eval = _mm256_add_ps(_mm256_set1_ps(self.time as f32), exclusive);
+
+                        let idx = _mm256_cvttps_epi32(t_eval);
+                        let floor_float = _mm256_cvtepi32_ps(idx);
+                        let frac = _mm256_sub_ps(t_eval, floor_float);
+
+                        indexes = std::ptr::read(&idx as *const _ as *const S::Vi32);
+                        fractionals = std::ptr::read(&frac as *const _ as *const S::Vf32);
+
+                        let mut x_arr = [0.0; 8];
+                        _mm256_storeu_ps(x_arr.as_mut_ptr(), x);
+                        self.time += x_arr[7] as f64;
+                    }
+
+                    let sample = self.grabber.get(indexes, fractionals);
+                    return SIMDSampleMono(sample);
+                }
+            }
+
             unsafe {
                 for i in 0..S::Vf32::WIDTH {
                     let speed_val = speed.get_unchecked(i);
-                    // Ensure positive speed to prevent negative time
                     let speed_val = speed_val.abs().max(0.0001);
                     let time = self.time;
                     self.time += speed_val as f64;
@@ -461,10 +714,56 @@ where
             let mut indexes = S::Vi32::zeroes();
             let mut fractionals = S::Vf32::zeroes();
 
+            #[cfg(target_arch = "x86_64")]
+            {
+                if S::Vf32::WIDTH == 8 {
+                    use std::arch::x86_64::*;
+                    unsafe {
+                        let speed_m256 = std::ptr::read(&speed as *const _ as *const __m256);
+
+                        let mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
+                        let abs_speed = _mm256_and_ps(speed_m256, mask);
+                        let clamped_speed = _mm256_max_ps(abs_speed, _mm256_set1_ps(0.0001));
+
+                        let mut x = clamped_speed;
+                        let shifted1 =
+                            _mm256_castsi256_ps(_mm256_slli_si256(_mm256_castps_si256(x), 4));
+                        x = _mm256_add_ps(x, shifted1);
+                        let shifted2 =
+                            _mm256_castsi256_ps(_mm256_slli_si256(_mm256_castps_si256(x), 8));
+                        x = _mm256_add_ps(x, shifted2);
+
+                        let cross = _mm256_permute2f128_ps(x, x, 0x08);
+                        let cross = _mm256_shuffle_ps(cross, cross, 0xFF);
+                        x = _mm256_add_ps(x, cross);
+
+                        let indices = _mm256_set_epi32(6, 5, 4, 3, 2, 1, 0, 0);
+                        let shifted_x = _mm256_permutevar8x32_ps(x, indices);
+                        let exclusive = _mm256_blend_ps(shifted_x, _mm256_setzero_ps(), 1);
+
+                        let t_eval = _mm256_add_ps(_mm256_set1_ps(self.time as f32), exclusive);
+
+                        let idx = _mm256_cvttps_epi32(t_eval);
+                        let floor_float = _mm256_cvtepi32_ps(idx);
+                        let frac = _mm256_sub_ps(t_eval, floor_float);
+
+                        indexes = std::ptr::read(&idx as *const _ as *const S::Vi32);
+                        fractionals = std::ptr::read(&frac as *const _ as *const S::Vf32);
+
+                        let mut x_arr = [0.0; 8];
+                        _mm256_storeu_ps(x_arr.as_mut_ptr(), x);
+                        self.time += x_arr[7] as f64;
+                    }
+
+                    let left = self.grabber_left.get(indexes, fractionals);
+                    let right = self.grabber_right.get(indexes, fractionals);
+                    return SIMDSampleStereo(left, right);
+                }
+            }
+
             unsafe {
                 for i in 0..S::Vf32::WIDTH {
                     let speed_val = speed.get_unchecked(i);
-                    // Ensure positive speed to prevent negative time
                     let speed_val = speed_val.abs().max(0.0001);
                     let time = self.time;
                     self.time += speed_val as f64;

@@ -132,6 +132,10 @@ pub struct ChannelInitOptions {
     ///
     /// Default: `false`
     pub fade_out_killing: bool,
+
+    /// Maximum simultaneous sounding notes per key.
+    /// Default: `Some(4)`
+    pub max_voices_per_key: Option<usize>,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -139,6 +143,7 @@ impl Default for ChannelInitOptions {
     fn default() -> Self {
         Self {
             fade_out_killing: false,
+            max_voices_per_key: Some(4),
         }
     }
 }
@@ -201,7 +206,8 @@ impl VoiceChannel {
             vec
         }
 
-        let params = VoiceChannelParams::new(stream_params);
+        let mut params = VoiceChannelParams::new(stream_params);
+        params.layers = options.max_voices_per_key;
         let shared_voice_counter = params.stats.voice_counter.clone();
 
         VoiceChannel {

@@ -44,6 +44,7 @@ pub struct VoiceBuffer {
 
 impl VoiceBuffer {
     pub fn new(options: ChannelInitOptions) -> Self {
+        let max_voices = options.max_voices_per_key;
         VoiceBuffer {
             options,
             id_counter: 0,
@@ -51,7 +52,7 @@ impl VoiceBuffer {
             voices: Vec::with_capacity(256),
             damper_held: false,
             held_by_damper: Vec::with_capacity(16),
-            max_voices: Some(4),
+            max_voices,
         }
     }
 
@@ -235,6 +236,7 @@ impl VoiceBuffer {
     }
 
     /// Set the maximum number of voices per key. None means no limit.
+    #[allow(dead_code)]
     pub fn set_max_voices(&mut self, max: Option<usize>) {
         self.max_voices = max;
     }

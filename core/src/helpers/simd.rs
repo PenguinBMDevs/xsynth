@@ -1,6 +1,9 @@
-use simdeez::*;
-
-use simdeez::prelude::*;
+#[cfg(target_arch = "aarch64")]
+use core::arch::aarch64::*;
+#[cfg(target_arch = "wasm32")]
+use core::arch::wasm32::*;
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::*;
 
 /// Sum the values of `source` to the values of `target`, writing to `target`.
 ///
@@ -8,90 +11,227 @@ use simdeez::prelude::*;
 /// Panics if source and target have different lengths.
 #[inline(always)]
 pub fn sum_simd(source: &[f32], target: &mut [f32]) {
-    // Ensure both slices have the same length to prevent out-of-bounds access
     let len = source.len().min(target.len());
     if len == 0 {
         return;
     }
-    
-    // Debug assertion to catch length mismatches in development
+
     debug_assert_eq!(
-        source.len(), 
-        target.len(), 
-        "sum_simd: source length ({}) != target length ({})", 
-        source.len(), 
+        source.len(),
+        target.len(),
+        "sum_simd: source length ({}) != target length ({})",
+        source.len(),
         target.len()
     );
 
-    simd_runtime_generate!(
-        // Highly optimized SIMD sum with loop unrolling
-        fn sum(source: &[f32], target: &mut [f32]) {
-            let len = source.len();
-            let width = S::Vf32::WIDTH;
-            let width2 = width * 2;
-            let width4 = width * 4;
-            let mut i = 0;
-            
-            // Process 4x SIMD-width chunks for maximum throughput
-            while i + width4 <= len {
-                unsafe {
-                    let src0 = S::Vf32::load_from_ptr_unaligned(source.as_ptr().add(i));
-                    let src1 = S::Vf32::load_from_ptr_unaligned(source.as_ptr().add(i + width));
-                    let src2 = S::Vf32::load_from_ptr_unaligned(source.as_ptr().add(i + width2));
-                    let src3 = S::Vf32::load_from_ptr_unaligned(source.as_ptr().add(i + width2 + width));
-                    
-                    let dst0 = S::Vf32::load_from_ptr_unaligned(target.as_ptr().add(i));
-                    let dst1 = S::Vf32::load_from_ptr_unaligned(target.as_ptr().add(i + width));
-                    let dst2 = S::Vf32::load_from_ptr_unaligned(target.as_ptr().add(i + width2));
-                    let dst3 = S::Vf32::load_from_ptr_unaligned(target.as_ptr().add(i + width2 + width));
-                    
-                    let sum0 = src0 + dst0;
-                    let sum1 = src1 + dst1;
-                    let sum2 = src2 + dst2;
-                    let sum3 = src3 + dst3;
-                    
-                    sum0.copy_to_ptr_unaligned(target.as_mut_ptr().add(i));
-                    sum1.copy_to_ptr_unaligned(target.as_mut_ptr().add(i + width));
-                    sum2.copy_to_ptr_unaligned(target.as_mut_ptr().add(i + width2));
-                    sum3.copy_to_ptr_unaligned(target.as_mut_ptr().add(i + width2 + width));
-                }
-                i += width4;
-            }
-            
-            // Process 2x SIMD-width chunks
-            while i + width2 <= len {
-                unsafe {
-                    let src0 = S::Vf32::load_from_ptr_unaligned(source.as_ptr().add(i));
-                    let src1 = S::Vf32::load_from_ptr_unaligned(source.as_ptr().add(i + width));
-                    let dst0 = S::Vf32::load_from_ptr_unaligned(target.as_ptr().add(i));
-                    let dst1 = S::Vf32::load_from_ptr_unaligned(target.as_ptr().add(i + width));
-                    (src0 + dst0).copy_to_ptr_unaligned(target.as_mut_ptr().add(i));
-                    (src1 + dst1).copy_to_ptr_unaligned(target.as_mut_ptr().add(i + width));
-                }
-                i += width2;
-            }
-            
-            // Process SIMD-width chunks
-            while i + width <= len {
-                unsafe {
-                    let src = S::Vf32::load_from_ptr_unaligned(source.as_ptr().add(i));
-                    let dst = S::Vf32::load_from_ptr_unaligned(target.as_ptr().add(i));
-                    (src + dst).copy_to_ptr_unaligned(target.as_mut_ptr().add(i));
-                }
-                i += width;
-            }
-            
-            // Handle remaining elements
-            while i < len {
-                unsafe {
-                    *target.get_unchecked_mut(i) += *source.get_unchecked(i);
-                }
-                i += 1;
-            }
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        unsafe {
+            sum_simd_avx2(&source[..len], &mut target[..len]);
         }
-    );
+        return;
+    }
 
-    sum(&source[..len], &mut target[..len]);
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("sse2") {
+        unsafe {
+            sum_simd_sse2(&source[..len], &mut target[..len]);
+        }
+        return;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    if std::arch::is_aarch64_feature_detected!("neon") {
+        unsafe {
+            sum_simd_neon(&source[..len], &mut target[..len]);
+        }
+        return;
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            sum_simd_wasm(&source[..len], &mut target[..len]);
+        }
+        return;
+    }
+
+    #[allow(unreachable_code)]
+    sum_simd_fallback(&source[..len], &mut target[..len]);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+unsafe fn sum_simd_avx2(source: &[f32], target: &mut [f32]) {
+    let mut i = 0;
+    let len = source.len();
+    while i + 32 <= len {
+        let s0 = _mm256_loadu_ps(source.as_ptr().add(i));
+        let s1 = _mm256_loadu_ps(source.as_ptr().add(i + 8));
+        let s2 = _mm256_loadu_ps(source.as_ptr().add(i + 16));
+        let s3 = _mm256_loadu_ps(source.as_ptr().add(i + 24));
+
+        let t0 = _mm256_loadu_ps(target.as_ptr().add(i));
+        let t1 = _mm256_loadu_ps(target.as_ptr().add(i + 8));
+        let t2 = _mm256_loadu_ps(target.as_ptr().add(i + 16));
+        let t3 = _mm256_loadu_ps(target.as_ptr().add(i + 24));
+
+        _mm256_storeu_ps(target.as_mut_ptr().add(i), _mm256_add_ps(s0, t0));
+        _mm256_storeu_ps(target.as_mut_ptr().add(i + 8), _mm256_add_ps(s1, t1));
+        _mm256_storeu_ps(target.as_mut_ptr().add(i + 16), _mm256_add_ps(s2, t2));
+        _mm256_storeu_ps(target.as_mut_ptr().add(i + 24), _mm256_add_ps(s3, t3));
+
+        i += 32;
+    }
+    while i + 8 <= len {
+        let s0 = _mm256_loadu_ps(source.as_ptr().add(i));
+        let t0 = _mm256_loadu_ps(target.as_ptr().add(i));
+        _mm256_storeu_ps(target.as_mut_ptr().add(i), _mm256_add_ps(s0, t0));
+        i += 8;
+    }
+    while i < len {
+        *target.get_unchecked_mut(i) += *source.get_unchecked(i);
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+#[inline]
+unsafe fn sum_simd_sse2(source: &[f32], target: &mut [f32]) {
+    let mut i = 0;
+    let len = source.len();
+    while i + 16 <= len {
+        let s0 = _mm_loadu_ps(source.as_ptr().add(i));
+        let s1 = _mm_loadu_ps(source.as_ptr().add(i + 4));
+        let s2 = _mm_loadu_ps(source.as_ptr().add(i + 8));
+        let s3 = _mm_loadu_ps(source.as_ptr().add(i + 12));
+
+        let t0 = _mm_loadu_ps(target.as_ptr().add(i));
+        let t1 = _mm_loadu_ps(target.as_ptr().add(i + 4));
+        let t2 = _mm_loadu_ps(target.as_ptr().add(i + 8));
+        let t3 = _mm_loadu_ps(target.as_ptr().add(i + 12));
+
+        _mm_storeu_ps(target.as_mut_ptr().add(i), _mm_add_ps(s0, t0));
+        _mm_storeu_ps(target.as_mut_ptr().add(i + 4), _mm_add_ps(s1, t1));
+        _mm_storeu_ps(target.as_mut_ptr().add(i + 8), _mm_add_ps(s2, t2));
+        _mm_storeu_ps(target.as_mut_ptr().add(i + 12), _mm_add_ps(s3, t3));
+
+        i += 16;
+    }
+    while i + 4 <= len {
+        let s0 = _mm_loadu_ps(source.as_ptr().add(i));
+        let t0 = _mm_loadu_ps(target.as_ptr().add(i));
+        _mm_storeu_ps(target.as_mut_ptr().add(i), _mm_add_ps(s0, t0));
+        i += 4;
+    }
+    while i < len {
+        *target.get_unchecked_mut(i) += *source.get_unchecked(i);
+        i += 1;
+    }
+}
+
+#[inline(always)]
+fn sum_simd_fallback(source: &[f32], target: &mut [f32]) {
+    let len = source.len();
+    let mut i = 0;
+    while i + 4 <= len {
+        unsafe {
+            *target.get_unchecked_mut(i) += *source.get_unchecked(i);
+            *target.get_unchecked_mut(i + 1) += *source.get_unchecked(i + 1);
+            *target.get_unchecked_mut(i + 2) += *source.get_unchecked(i + 2);
+            *target.get_unchecked_mut(i + 3) += *source.get_unchecked(i + 3);
+        }
+        i += 4;
+    }
+    while i < len {
+        unsafe {
+            *target.get_unchecked_mut(i) += *source.get_unchecked(i);
+        }
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn sum_simd_neon(source: &[f32], target: &mut [f32]) {
+    let mut i = 0;
+    let len = source.len();
+    while i + 16 <= len {
+        let s0 = vld1q_f32(source.as_ptr().add(i));
+        let s1 = vld1q_f32(source.as_ptr().add(i + 4));
+        let s2 = vld1q_f32(source.as_ptr().add(i + 8));
+        let s3 = vld1q_f32(source.as_ptr().add(i + 12));
+
+        let t0 = vld1q_f32(target.as_ptr().add(i));
+        let t1 = vld1q_f32(target.as_ptr().add(i + 4));
+        let t2 = vld1q_f32(target.as_ptr().add(i + 8));
+        let t3 = vld1q_f32(target.as_ptr().add(i + 12));
+
+        vst1q_f32(target.as_mut_ptr().add(i), vaddq_f32(s0, t0));
+        vst1q_f32(target.as_mut_ptr().add(i + 4), vaddq_f32(s1, t1));
+        vst1q_f32(target.as_mut_ptr().add(i + 8), vaddq_f32(s2, t2));
+        vst1q_f32(target.as_mut_ptr().add(i + 12), vaddq_f32(s3, t3));
+
+        i += 16;
+    }
+    while i + 4 <= len {
+        let s0 = vld1q_f32(source.as_ptr().add(i));
+        let t0 = vld1q_f32(target.as_ptr().add(i));
+        vst1q_f32(target.as_mut_ptr().add(i), vaddq_f32(s0, t0));
+        i += 4;
+    }
+    while i < len {
+        *target.get_unchecked_mut(i) += *source.get_unchecked(i);
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[target_feature(enable = "simd128")]
+#[inline]
+unsafe fn sum_simd_wasm(source: &[f32], target: &mut [f32]) {
+    let mut i = 0;
+    let len = source.len();
+    while i + 16 <= len {
+        let s0 = v128_load(source.as_ptr().add(i) as *const v128);
+        let s1 = v128_load(source.as_ptr().add(i + 4) as *const v128);
+        let s2 = v128_load(source.as_ptr().add(i + 8) as *const v128);
+        let s3 = v128_load(source.as_ptr().add(i + 12) as *const v128);
+
+        let t0 = v128_load(target.as_ptr().add(i) as *const v128);
+        let t1 = v128_load(target.as_ptr().add(i + 4) as *const v128);
+        let t2 = v128_load(target.as_ptr().add(i + 8) as *const v128);
+        let t3 = v128_load(target.as_ptr().add(i + 12) as *const v128);
+
+        v128_store(target.as_mut_ptr().add(i) as *mut v128, f32x4_add(s0, t0));
+        v128_store(
+            target.as_mut_ptr().add(i + 4) as *mut v128,
+            f32x4_add(s1, t1),
+        );
+        v128_store(
+            target.as_mut_ptr().add(i + 8) as *mut v128,
+            f32x4_add(s2, t2),
+        );
+        v128_store(
+            target.as_mut_ptr().add(i + 12) as *mut v128,
+            f32x4_add(s3, t3),
+        );
+
+        i += 16;
+    }
+    while i + 4 <= len {
+        let s0 = v128_load(source.as_ptr().add(i) as *const v128);
+        let t0 = v128_load(target.as_ptr().add(i) as *const v128);
+        v128_store(target.as_mut_ptr().add(i) as *mut v128, f32x4_add(s0, t0));
+        i += 4;
+    }
+    while i < len {
+        *target.get_unchecked_mut(i) += *source.get_unchecked(i);
+        i += 1;
+    }
 }
 
 #[cfg(test)]

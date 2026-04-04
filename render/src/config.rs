@@ -132,6 +132,7 @@ impl State {
                         .get_one("disable fade out voice killing")
                         .copied()
                         .unwrap_or(true),
+                    ..Default::default()
                 },
                 format: SynthFormat::Midi,
                 audio_params: AudioStreamParams::new(

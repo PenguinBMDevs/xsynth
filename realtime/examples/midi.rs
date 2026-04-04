@@ -1,9 +1,9 @@
 use std::{
-    sync::Arc,
+    process,
     sync::atomic::{AtomicBool, Ordering},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
-    process,
 };
 
 use midi_toolkit::{
@@ -16,13 +16,15 @@ use midi_toolkit::{
     },
 };
 use xsynth_core::{
-    channel::{ChannelAudioEvent, ChannelConfigEvent, ChannelEvent, ControlEvent, ChannelInitOptions},
+    channel::{
+        ChannelAudioEvent, ChannelConfigEvent, ChannelEvent, ChannelInitOptions, ControlEvent,
+    },
     soundfont::{SampleSoundfont, SoundfontBase},
 };
 use xsynth_realtime::{RealtimeSynth, SynthEvent};
 
 /// Maximum allowed render time in seconds before forcing exit
-const MAX_RENDER_TIME: f64 = 3.0;
+const MAX_RENDER_TIME: f64 = 1.0;
 /// Maximum consecutive high render time readings before exit
 const MAX_CONSECUTIVE_HIGH: u32 = 3;
 /// Maximum consecutive negative buffer readings before exit
@@ -33,10 +35,16 @@ fn main() {
     let (Some(midi), Some(sfz)) = (
         args.get(1)
             .cloned()
-            .or_else(|| std::env::var("XSYNTH_EXAMPLE_MIDI").ok()),
+            .or_else(|| std::env::var("XSYNTH_EXAMPLE_MIDI").ok())
+            .or_else(|| {
+                Some(
+                    r"D:\2026寒假-炭黑烤馒头系列\necrofantasiaτ6283185307notes62831tracks(1)\necrofantasia τ 6283185307 notes 62831 tracks.mid".to_string(),
+                )
+            }),
         args.get(2)
             .cloned()
-            .or_else(|| std::env::var("XSYNTH_EXAMPLE_SF").ok()),
+            .or_else(|| std::env::var("XSYNTH_EXAMPLE_SF").ok())
+            .or_else(|| Some(r"D:\BM-DATA\SF2\Nexus Trap Piano V2（黑乐谱推荐）.sf2".to_string())),
     ) else {
         println!(
             "Usage: {} [midi] [sfz/sf2]",
@@ -48,14 +56,15 @@ fn main() {
     };
 
     // Use multithreading for best performance with high voice counts
-    let synth = RealtimeSynth::open_with_default_output(
-        xsynth_realtime::XSynthRealtimeConfig {
-            channel_init_options: ChannelInitOptions::default(),
-            render_window_ms: 10.0,
-            multithreading: xsynth_realtime::ThreadCount::Auto,
+    let synth = RealtimeSynth::open_with_default_output(xsynth_realtime::XSynthRealtimeConfig {
+        channel_init_options: ChannelInitOptions {
+            max_voices_per_key: None,
             ..Default::default()
-        }
-    );
+        },
+        render_window_ms: 10.0,
+        multithreading: xsynth_realtime::ThreadCount::Auto,
+        ..Default::default()
+    });
     let mut sender = synth.get_sender_ref().clone();
 
     let params = synth.stream_params();
@@ -71,11 +80,11 @@ fn main() {
     )));
 
     let stats = synth.get_stats();
-    
+
     // Flag to signal when render time is too high
     let should_exit = Arc::new(AtomicBool::new(false));
     let should_exit_clone = should_exit.clone();
-    
+
     thread::spawn(move || {
         let mut consecutive_high = 0u32;
         let mut consecutive_negative_buffer = 0u32;
@@ -83,12 +92,12 @@ fn main() {
             let render_time = stats.buffer().average_renderer_load();
             let voice_count = stats.voice_count();
             let buffer = stats.buffer().last_samples_after_read();
-            
+
             println!(
                 "Voice Count: {}\tBuffer: {}\tRender time: {}",
                 voice_count, buffer, render_time
             );
-            
+
             // Check if buffer is negative (underrun)
             if buffer < 0 {
                 consecutive_negative_buffer += 1;
@@ -96,7 +105,7 @@ fn main() {
                     "WARNING: Buffer underrun! Buffer: {} (consecutive: {})",
                     buffer, consecutive_negative_buffer
                 );
-                
+
                 if consecutive_negative_buffer >= MAX_CONSECUTIVE_NEGATIVE_BUFFER {
                     eprintln!(
                         "CRITICAL: Buffer underrun for {} consecutive readings. Forcing exit!",
@@ -109,7 +118,7 @@ fn main() {
             } else {
                 consecutive_negative_buffer = 0;
             }
-            
+
             // Check if render time exceeds threshold
             if render_time > MAX_RENDER_TIME {
                 consecutive_high += 1;
@@ -117,7 +126,7 @@ fn main() {
                     "WARNING: Render time {}s exceeds threshold {}s (consecutive: {})",
                     render_time, MAX_RENDER_TIME, consecutive_high
                 );
-                
+
                 if consecutive_high >= MAX_CONSECUTIVE_HIGH {
                     eprintln!(
                         "CRITICAL: Render time exceeded {}s for {} consecutive readings. Forcing exit!",
@@ -130,7 +139,7 @@ fn main() {
             } else {
                 consecutive_high = 0;
             }
-            
+
             thread::sleep(Duration::from_millis(10));
         }
     });
@@ -162,7 +171,7 @@ fn main() {
             eprintln!("Playback aborted due to excessive render time");
             process::exit(1);
         }
-        
+
         if batch.delta != 0.0 {
             time += batch.delta;
             let diff = time - now.elapsed().as_secs_f64();

@@ -70,6 +70,7 @@ pub struct XSynth_RealtimeStats {
 pub extern "C" fn XSynth_Realtime_Create(config: XSynth_RealtimeConfig) -> XSynth_RealtimeSynth {
     let channel_init_options = ChannelInitOptions {
         fade_out_killing: config.fade_out_killing,
+        ..Default::default()
     };
 
     let options = XSynthRealtimeConfig {
