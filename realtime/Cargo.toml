@@ -24,6 +24,7 @@ to_vec = "0.1.0"
 wav = "1.0.1"
 xsynth-core = { workspace = true }
 serde = { version = "1.0", optional = true, features = ["derive"] }
+thiserror = "1.0.63"
 
 [features]
 serde = ["dep:serde", "xsynth-core/serde"]

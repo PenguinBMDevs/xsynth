@@ -1,5 +1,5 @@
 use crate::utils::*;
-use clap::{command, Arg, ArgAction};
+use clap::{command, Arg, ArgAction, ArgMatches, Command};
 use std::path::PathBuf;
 use xsynth_core::{
     channel::ChannelInitOptions,
@@ -33,82 +33,87 @@ impl State {
         amount of threads that should be used.\n\
         Default: \"auto\"";
 
-    pub fn from_args() -> Self {
-        let matches = command!()
-            .args([
-                Arg::new("midi")
-                    .required(true)
-                    .help("The path of the MIDI file to be converted."),
-                Arg::new("soundfonts")
-                    .required(true)
-                    .help(
-                        "Paths of the soundfonts to be used.\n\
-                        Will be loaded in the order they are typed.",
-                    )
-                    .action(ArgAction::Append),
-                Arg::new("output").short('o').long("output").help(
-                    "The path of the output audio file.\n\
-                    Default: \"out.wav\"",
-                ),
-                Arg::new("sample rate")
-                    .short('s')
-                    .long("sample-rate")
-                    .help(
-                        "The sample rate of the output audio in Hz.\n\
-                        Default: 48000 (48kHz)",
-                    )
-                    .value_parser(int_parser),
-                Arg::new("audio channels")
-                    .short('c')
-                    .long("audio-channels")
-                    .help(
-                        "The audio channel count of the output audio.\n\
-                        Supported: \"mono\" and \"stereo\"\n\
-                        Default: stereo",
-                    )
-                    .value_parser(audio_channels_parser),
-                Arg::new("layer limit")
-                    .short('l')
-                    .long("layers")
-                    .help(
-                        "The layer limit for each channel. Use \"0\" for unlimited layers.\n\
-                        One layer is one voice per key per channel.\n\
-                        Default: 32",
-                    )
-                    .value_parser(layers_parser),
-                Arg::new("channel threading")
-                    .long("channel-threading")
-                    .help("Per-channel multithreading options.\n".to_owned() + Self::THREADING_HELP)
-                    .value_parser(threading_parser),
-                Arg::new("key threading")
-                    .long("key-threading")
-                    .help("Per-key multithreading options.\n".to_owned() + Self::THREADING_HELP)
-                    .value_parser(threading_parser),
-                Arg::new("limiter")
-                    .short('L')
-                    .long("apply-limiter")
-                    .help("Apply an audio limiter to the output audio to prevent clipping.")
-                    .action(ArgAction::SetTrue),
-                Arg::new("disable fade out voice killing")
-                    .long("disable-fade-out")
-                    .help("Disables fade out when killing a voice. This may cause popping.")
-                    .action(ArgAction::SetFalse),
-                Arg::new("linear envelope")
-                    .long("linear-envelope")
-                    .help("Use a linear decay and release phase in the volume envelope, in amplitude units.")
-                    .action(ArgAction::SetTrue),
-                Arg::new("interpolation")
-                    .short('I')
-                    .long("interpolation")
-                    .help(
-                        "The interpolation algorithm to use. Available options are\n\
-                        \"none\" (no interpolation) and \"linear\" (linear interpolation).\n\
-                        Default: \"linear\"",
-                    )
-                    .value_parser(interpolation_parser),
-            ])
-            .get_matches();
+    pub fn command() -> Command {
+        command!().args([
+            Arg::new("midi")
+                .required(true)
+                .help("The path of the MIDI file to be converted."),
+            Arg::new("soundfonts")
+                .required(true)
+                .help(
+                    "Paths of the soundfonts to be used.\n\
+                    Will be loaded in the order they are typed.",
+                )
+                .action(ArgAction::Append),
+            Arg::new("output").short('o').long("output").help(
+                "The path of the output audio file.\n\
+                Default: \"out.wav\"",
+            ),
+            Arg::new("sample rate")
+                .short('s')
+                .long("sample-rate")
+                .help(
+                    "The sample rate of the output audio in Hz.\n\
+                    Default: 48000 (48kHz)",
+                )
+                .value_parser(int_parser),
+            Arg::new("audio channels")
+                .short('c')
+                .long("audio-channels")
+                .help(
+                    "The audio channel count of the output audio.\n\
+                    Supported: \"mono\" and \"stereo\"\n\
+                    Default: stereo",
+                )
+                .value_parser(audio_channels_parser),
+            Arg::new("layer limit")
+                .short('l')
+                .long("layers")
+                .help(
+                    "The layer limit for each channel. Use \"0\" for unlimited layers.\n\
+                    One layer is one voice per key per channel.\n\
+                    Default: 32",
+                )
+                .value_parser(layers_parser),
+            Arg::new("channel threading")
+                .long("channel-threading")
+                .help("Per-channel multithreading options.\n".to_owned() + Self::THREADING_HELP)
+                .value_parser(threading_parser),
+            Arg::new("key threading")
+                .long("key-threading")
+                .help("Per-key multithreading options.\n".to_owned() + Self::THREADING_HELP)
+                .value_parser(threading_parser),
+            Arg::new("limiter")
+                .short('L')
+                .long("apply-limiter")
+                .help("Apply an audio limiter to the output audio to prevent clipping.")
+                .action(ArgAction::SetTrue),
+            Arg::new("disable fade out voice killing")
+                .long("disable-fade-out")
+                .help("Disables fade out when killing a voice. This may cause popping.")
+                .action(ArgAction::SetFalse),
+            Arg::new("linear envelope")
+                .long("linear-envelope")
+                .help("Use a linear decay and release phase in the volume envelope, in amplitude units.")
+                .action(ArgAction::SetTrue),
+            Arg::new("interpolation")
+                .short('I')
+                .long("interpolation")
+                .help(
+                    "The interpolation algorithm to use. Available options are\n\
+                    \"none\" (no interpolation) and \"linear\" (linear interpolation).\n\
+                    Default: \"linear\"",
+                )
+                .value_parser(interpolation_parser),
+        ])
+    }
 
+    pub fn from_args() -> Self {
+        let matches = Self::command().get_matches();
+        Self::from_matches(&matches)
+    }
+
+    fn from_matches(matches: &ArgMatches) -> Self {
         let midi = matches
             .get_one::<String>("midi")
             .cloned()
@@ -156,10 +161,12 @@ impl State {
                 bank: None,
                 preset: None,
                 vol_envelope_options: if matches
-                    .get_one("linear release")
+                    .get_one("linear envelope")
                     .copied()
                     .unwrap_or_default()
                 {
+                    // EnvelopeCurveType is expressed in dB-space, so the
+                    // "linear in amplitude" CLI mode maps to exponential here.
                     EnvelopeOptions {
                         attack_curve: EnvelopeCurveType::Exponential,
                         decay_curve: EnvelopeCurveType::Exponential,
@@ -188,5 +195,46 @@ impl State {
             output: PathBuf::from(output),
             soundfonts,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::State;
+    use xsynth_core::soundfont::EnvelopeCurveType;
+
+    #[test]
+    fn linear_envelope_flag_uses_db_curves_that_render_linear_in_amplitude() {
+        let matches = State::command().get_matches_from([
+            "xsynth-render",
+            "song.mid",
+            "piano.sf2",
+            "--linear-envelope",
+        ]);
+        let state = State::from_matches(&matches);
+
+        assert_eq!(
+            state.config.sf_options.vol_envelope_options.decay_curve,
+            EnvelopeCurveType::Exponential
+        );
+        assert_eq!(
+            state.config.sf_options.vol_envelope_options.release_curve,
+            EnvelopeCurveType::Exponential
+        );
+    }
+
+    #[test]
+    fn default_envelope_curves_remain_soundfont_style() {
+        let matches = State::command().get_matches_from(["xsynth-render", "song.mid", "piano.sf2"]);
+        let state = State::from_matches(&matches);
+
+        assert_eq!(
+            state.config.sf_options.vol_envelope_options.decay_curve,
+            EnvelopeCurveType::Linear
+        );
+        assert_eq!(
+            state.config.sf_options.vol_envelope_options.release_curve,
+            EnvelopeCurveType::Linear
+        );
     }
 }

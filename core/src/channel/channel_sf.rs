@@ -130,4 +130,12 @@ impl ChannelSoundfont {
     ) -> impl Iterator<Item = Box<dyn Voice>> + 'a {
         self.matrix.spawn_voices_release(control, key, vel)
     }
+
+    pub fn exclusive_classes_attack<'a>(
+        &'a self,
+        key: u8,
+        vel: u8,
+    ) -> impl Iterator<Item = u8> + 'a {
+        self.matrix.exclusive_classes_attack(key, vel)
+    }
 }

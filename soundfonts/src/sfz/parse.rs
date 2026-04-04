@@ -1,20 +1,20 @@
 use std::{
-    borrow::Cow,
-    cell::RefCell,
     collections::HashMap,
-    fs::File,
-    io::{BufReader, Read},
     ops::RangeInclusive,
     path::{Path, PathBuf},
 };
 
 use crate::{FilterType, LoopMode};
-use encoding_rs::UTF_8;
-use encoding_rs_io::DecodeReaderBytesBuilder;
+
+use self::defines::apply_defines;
 
 use super::grammar::{ErrorTolerantToken, Group, Opcode, Token, TokenKind};
 use regex_bnf::{FileLocation, ParseError};
 use thiserror::Error;
+
+mod defines;
+mod resolver;
+use resolver::TokenResolver;
 
 #[derive(Debug, Clone)]
 pub enum SfzOpcode {
@@ -116,6 +116,9 @@ pub enum SfzParseError {
 
     #[error("Failed to read file: {0}")]
     FailedToReadFile(PathBuf),
+
+    #[error("Cyclic include detected while reading: {0}")]
+    IncludeCycle(PathBuf),
 }
 
 fn parse_key_number(val: &str) -> Option<i8> {
@@ -219,22 +222,11 @@ fn parse_loop_mode(val: &str) -> Option<LoopMode> {
 
 fn parse_sfz_opcode(
     opcode: Opcode,
-    defines: &RefCell<HashMap<String, String>>,
+    defines: &HashMap<String, String>,
 ) -> Result<Option<SfzOpcode>, SfzValidationError> {
-    let name = opcode.name.name.text;
-    let mut name = Cow::Borrowed(name.trim());
-
-    let val = opcode.value.as_string();
-    let mut val = Cow::Borrowed(val.trim());
-
-    for (key, replace) in defines.borrow().iter() {
-        if val.contains(key) {
-            val = Cow::Owned(val.replace(key, replace));
-        }
-        if name.contains(key) {
-            name = Cow::Owned(name.replace(key, replace));
-        }
-    }
+    let opcode_value = opcode.value.as_string();
+    let name = apply_defines(opcode.name.name.text, defines);
+    let val = apply_defines(&opcode_value, defines);
 
     use SfzAmpegEnvelope::*;
     use SfzOpcode::*;
@@ -314,7 +306,7 @@ fn parse_sfz_group(group: Group) -> Result<SfzGroupType, SfzValidationError> {
 
 fn grammar_token_into_sfz_token(
     token: Token,
-    defines: &RefCell<HashMap<String, String>>,
+    defines: &HashMap<String, String>,
 ) -> Result<Option<SfzTokenWithMeta>, SfzValidationError> {
     match token.kind {
         TokenKind::Comment(_) => Ok(None),
@@ -336,9 +328,10 @@ fn grammar_token_into_sfz_token(
     }
 }
 
+#[cfg(test)]
 pub fn parse_tokens_raw<'a>(
     input: &'a str,
-    defines: &'a RefCell<HashMap<String, String>>,
+    defines: &'a HashMap<String, String>,
 ) -> impl 'a + Iterator<Item = Result<SfzTokenWithMeta, SfzParseError>> {
     let iter = ErrorTolerantToken::parse_as_iter(input);
 
@@ -352,80 +345,128 @@ pub fn parse_tokens_raw<'a>(
     })
 }
 
-fn parse_tokens_resolved_recursive(
-    instr_path: &Path,
-    file_path: &Path,
-    defines: &RefCell<HashMap<String, String>>,
-) -> Result<Vec<SfzToken>, SfzParseError> {
-    let file_path = file_path
-        .canonicalize()
-        .map_err(|_| SfzParseError::FailedToReadFile(file_path.to_owned()))?;
-
-    let f = File::open(&file_path)
-        .map_err(|_| SfzParseError::FailedToReadFile(file_path.to_owned()))?;
-
-    let mut reader = BufReader::new(
-        DecodeReaderBytesBuilder::new()
-            .encoding(Some(UTF_8))
-            .build(f),
-    );
-    let mut file = String::new();
-
-    reader.read_to_string(&mut file).unwrap();
-
-    // Unwrap here is safe because the path is confirmed to be a file (read above)
-    // and therefore it will always have a parent folder. The path is also canonicalized.
-    let parent_path = instr_path.parent().unwrap();
-
-    let mut tokens = Vec::new();
-
-    let iter = parse_tokens_raw(&file, defines);
-
-    let mut parsed_includes = HashMap::new();
-
-    for t in iter {
-        match t {
-            Ok(t) => match t {
-                SfzTokenWithMeta::Import(mut path) => {
-                    for (key, replace) in defines.borrow().iter() {
-                        if path.contains(key) {
-                            path = path.replace(key, replace);
-                        }
-                    }
-
-                    // Get the cached tokens for this current path, or parse them if they haven't been parsed yet
-                    let parsed_tokens = parsed_includes.entry(path.clone()).or_insert_with(|| {
-                        let full_path = parent_path.join(&path);
-                        parse_tokens_resolved_recursive(instr_path, &full_path, defines)
-                    });
-
-                    if let Ok(parsed_tokens) = parsed_tokens {
-                        tokens.extend_from_slice(parsed_tokens);
-                    } else {
-                        // If we recieved an error, then extact the owned error from the hashmap and return it
-                        return Err(parsed_includes.remove(&path).unwrap().unwrap_err());
-                    }
-                }
-                SfzTokenWithMeta::Group(group) => tokens.push(SfzToken::Group(group)),
-                SfzTokenWithMeta::Opcode(opcode) => tokens.push(SfzToken::Opcode(opcode)),
-                SfzTokenWithMeta::Define(variable, value) => {
-                    // We clear the include cache here so if the same file is included
-                    // it will use the new definition values
-                    parsed_includes.clear();
-
-                    defines
-                        .borrow_mut()
-                        .insert(variable.trim().to_owned(), value.trim().to_owned());
-                }
-            },
-            Err(e) => return Err(e),
-        }
-    }
-
-    Ok(tokens)
+pub fn parse_tokens_resolved(file_path: &Path) -> Result<Vec<SfzToken>, SfzParseError> {
+    TokenResolver::default().resolve_file(file_path)
 }
 
-pub fn parse_tokens_resolved(file_path: &Path) -> Result<Vec<SfzToken>, SfzParseError> {
-    let defines = RefCell::new(HashMap::new());
-    parse_tokens_resolved_recursive(file_path, file_path, &defines)
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashMap,
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::{
+        parse_key_number, parse_tokens_raw, parse_tokens_resolved, SfzToken, SfzTokenWithMeta,
+    };
+
+    fn create_temp_dir(label: &str) -> PathBuf {
+        let unique = format!(
+            "xsynth-sfz-parse-test-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn parse_key_number_accepts_note_names() {
+        assert_eq!(parse_key_number("c4"), Some(60));
+        assert_eq!(parse_key_number("db3"), Some(49));
+        assert_eq!(parse_key_number("-1"), Some(-1));
+    }
+
+    #[test]
+    fn parse_tokens_raw_resolves_defines_in_opcodes() {
+        let defines = HashMap::from([("$VALUE".to_owned(), "snare.wav".to_owned())]);
+        let input = "<region>\nsample=$VALUE\n";
+
+        let tokens = parse_tokens_raw(input, &defines)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(matches!(tokens[0], SfzTokenWithMeta::Group(_)));
+        assert!(matches!(
+            tokens[1],
+            SfzTokenWithMeta::Opcode(super::SfzOpcode::Sample(ref path)) if path == "snare.wav"
+        ));
+    }
+
+    #[test]
+    fn parse_tokens_resolved_includes_nested_files() {
+        let dir = create_temp_dir("resolved");
+        let root = dir.join("root.sfz");
+        let included = dir.join("nested.sfz");
+
+        fs::write(&included, "<region>\nsample=test.wav\n").unwrap();
+        fs::write(&root, "#include \"nested.sfz\"\n").unwrap();
+
+        let tokens = parse_tokens_resolved(&root).unwrap();
+
+        assert!(matches!(
+            tokens.as_slice(),
+            [SfzToken::Group(_), SfzToken::Opcode(_)]
+        ));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parse_tokens_resolved_reparses_include_after_define_changes() {
+        let dir = create_temp_dir("define-reparse");
+        let root = dir.join("root.sfz");
+        let included = dir.join("nested.sfz");
+
+        fs::write(&included, "<region>\nsample=$NAME\n").unwrap();
+        fs::write(
+            &root,
+            r#"
+#define $NAME first.wav
+#include "nested.sfz"
+#define $NAME second.wav
+#include "nested.sfz"
+"#,
+        )
+        .unwrap();
+
+        let tokens = parse_tokens_resolved(&root).unwrap();
+
+        assert!(matches!(
+            tokens[1],
+            SfzToken::Opcode(super::SfzOpcode::Sample(ref path)) if path == "first.wav"
+        ));
+        assert!(matches!(
+            tokens[3],
+            SfzToken::Opcode(super::SfzOpcode::Sample(ref path)) if path == "second.wav"
+        ));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parse_tokens_resolved_rejects_include_cycles() {
+        let dir = create_temp_dir("cycle");
+        let root = dir.join("root.sfz");
+        let nested = dir.join("nested.sfz");
+
+        fs::write(&root, "#include \"nested.sfz\"\n").unwrap();
+        fs::write(&nested, "#include \"root.sfz\"\n").unwrap();
+
+        let result = parse_tokens_resolved(&root);
+        let root_canonical = root.canonicalize().unwrap();
+
+        assert!(matches!(
+            result,
+            Err(super::SfzParseError::IncludeCycle(path)) if path == root_canonical
+        ));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

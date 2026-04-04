@@ -1,19 +1,15 @@
 mod config;
 use config::*;
 
-mod rendered;
-use rendered::*;
-
 mod utils;
 use utils::get_midi_length;
 
-mod writer;
-
 use xsynth_core::{
-    channel::{ChannelAudioEvent, ChannelConfigEvent, ChannelEvent, ControlEvent},
+    channel::{ChannelAudioEvent, ChannelEvent, ControlEvent},
     channel_group::SynthEvent,
     soundfont::{SampleSoundfont, SoundfontBase},
 };
+use xsynth_render::{OfflineRenderConfig, OfflineWavRenderer};
 
 use midi_toolkit::{
     events::{Event, MIDIEventEnum},
@@ -38,29 +34,30 @@ use atomic_float::AtomicF64;
 
 fn main() {
     let state = State::from_args();
-
-    let mut synth = XSynthRender::new(state.config.clone(), state.output.clone());
-
+    let params = state.config.group_options.audio_params;
     print!("Loading soundfonts...");
-    synth.send_event(SynthEvent::AllChannels(ChannelEvent::Config(
-        ChannelConfigEvent::SetSoundfonts(
-            state
-                .soundfonts
-                .iter()
-                .map(|s| {
-                    let sf: Arc<dyn SoundfontBase> = Arc::new(
-                        SampleSoundfont::new(s, synth.get_params(), state.config.sf_options)
-                            .unwrap(),
-                    );
-                    sf
-                })
-                .collect::<Vec<Arc<dyn SoundfontBase>>>(),
-        ),
-    )));
+    let soundfonts = state
+        .soundfonts
+        .iter()
+        .map(|s| {
+            let sf: Arc<dyn SoundfontBase> =
+                Arc::new(SampleSoundfont::new(s, params, state.config.sf_options).unwrap());
+            sf
+        })
+        .collect::<Vec<Arc<dyn SoundfontBase>>>();
 
-    synth.send_event(SynthEvent::AllChannels(ChannelEvent::Config(
-        ChannelConfigEvent::SetLayerCount(state.layers),
-    )));
+    let mut synth = OfflineWavRenderer::new(
+        OfflineRenderConfig {
+            group_options: state.config.group_options.clone(),
+            use_limiter: state.config.use_limiter,
+        },
+        state.output.clone(),
+        soundfonts,
+        state.layers,
+    )
+    .unwrap();
+
+    println!(" done.");
 
     let length = get_midi_length(state.midi.to_str().unwrap());
 
@@ -117,7 +114,7 @@ fn main() {
 
     for batch in rcv {
         if batch.delta > 0.0 {
-            synth.render_batch(batch.delta);
+            synth.render_batch(batch.delta).unwrap();
             position.fetch_add(batch.delta, Ordering::Relaxed);
             voices.store(synth.voice_count(), Ordering::Relaxed);
         }
@@ -171,7 +168,7 @@ fn main() {
     synth.send_event(SynthEvent::AllChannels(ChannelEvent::Audio(
         ChannelAudioEvent::ResetControl,
     )));
-    synth.finalize();
+    synth.finalize().unwrap();
 
     let elapsed = now.elapsed();
     thread::sleep(Duration::from_millis(200));

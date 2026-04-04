@@ -14,6 +14,12 @@ fn voice_iter_from_vec<'a>(
     vec.iter().map(move |voice| voice.spawn_voice(control))
 }
 
+fn exclusive_classes_from_vec<'a>(
+    vec: &'a [Box<dyn VoiceSpawner>],
+) -> impl Iterator<Item = u8> + 'a {
+    vec.iter().filter_map(|voice| voice.exclusive_class())
+}
+
 impl VoiceSpawnerMatrix {
     pub fn new() -> Self {
         let mut voice_spawners_attack = Vec::new();
@@ -83,5 +89,14 @@ impl VoiceSpawnerMatrix {
     pub fn set_spawners_release(&mut self, key: u8, vel: u8, spawners: Vec<Box<dyn VoiceSpawner>>) {
         let index = self.get_spawners_index_at_release(key, vel);
         self.voice_spawners_release[index] = spawners;
+    }
+
+    #[inline(always)]
+    pub fn exclusive_classes_attack<'a>(
+        &'a self,
+        key: u8,
+        vel: u8,
+    ) -> impl Iterator<Item = u8> + 'a {
+        exclusive_classes_from_vec(self.get_attack_spawners_vec_at(key, vel))
     }
 }

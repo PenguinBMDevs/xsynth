@@ -8,15 +8,17 @@ pub struct VoiceBase<T: Send + Sync + VoiceSampleGenerator> {
     releasing: bool,
     killed: bool,
     velocity: u8,
+    exclusive_class: Option<u8>,
 }
 
 impl<T: Send + Sync + VoiceSampleGenerator> VoiceBase<T> {
-    pub fn new(velocity: u8, sample_generator: T) -> VoiceBase<T> {
+    pub fn new(velocity: u8, exclusive_class: Option<u8>, sample_generator: T) -> VoiceBase<T> {
         VoiceBase {
             sample_generator,
             releasing: false,
             killed: false,
             velocity,
+            exclusive_class,
         }
     }
 }
@@ -72,5 +74,10 @@ where
     #[inline(always)]
     fn velocity(&self) -> u8 {
         self.velocity
+    }
+
+    #[inline(always)]
+    fn exclusive_class(&self) -> Option<u8> {
+        self.exclusive_class
     }
 }

@@ -18,7 +18,7 @@ use super::{
     voice::VoiceControlData,
     voice::{EnvelopeParameters, Voice},
 };
-use crate::{helpers::db_to_amp, AudioStreamParams, ChannelCount};
+use crate::{helpers::db_to_amp, voice::EnvelopeDescriptor, AudioStreamParams, ChannelCount};
 
 pub use xsynth_soundfonts::{sf2::Sf2ParseError, sfz::SfzParseError};
 
@@ -33,6 +33,9 @@ pub use config::*;
 
 pub trait VoiceSpawner: Sync + Send {
     fn spawn_voice(&self, control: &VoiceControlData) -> Box<dyn Voice>;
+    fn exclusive_class(&self) -> Option<u8> {
+        None
+    }
 }
 
 pub trait SoundfontBase: Sync + Send + std::fmt::Debug {
@@ -60,6 +63,7 @@ pub(super) struct LoopParams {
     pub offset: u32,
     pub start: u32,
     pub end: u32,
+    pub stop: Option<u32>,
 }
 
 struct SampleVoiceSpawnerParams {
@@ -73,6 +77,7 @@ struct SampleVoiceSpawnerParams {
     envelope: Arc<EnvelopeParameters>,
     sample: Arc<[Arc<[f32]>]>,
     interpolator: Interpolator,
+    exclusive_class: Option<u8>,
 }
 
 pub(super) struct SoundfontInstrument {
@@ -115,8 +120,13 @@ pub(super) struct SoundfontInstrument {
 /// ## SF2 specification support
 /// ### Generators
 /// - `startAddrsOffset`
+/// - `endAddrsOffset`
 /// - `startloopAddrsOffset`
 /// - `endloopAddrsOffset`
+/// - `startAddrsCoarseOffset`
+/// - `endAddrsCoarseOffset`
+/// - `startloopAddrsCoarseOffset`
+/// - `endloopAddrsCoarseOffset`
 /// - `initialFilterFc`
 /// - `initialFilterQ`
 /// - `pan`
@@ -135,9 +145,29 @@ pub(super) struct SoundfontInstrument {
 /// - `sampleID`
 /// - `sampleModes`
 /// - `overridingRootKey`
+/// - `scaleTuning`
+/// - `exclusiveClass`
+/// - `keynum`
+/// - `velocity`
+/// - `keynumToVolEnvHold`
+/// - `keynumToVolEnvDecay`
 ///
 /// ### Modulators
-/// None
+/// XSynth intentionally supports a baked subset of SF2 modulators so note-on
+/// articulation can be resolved at soundfont load time without adding runtime
+/// voice stages. Currently supported:
+/// - sources: key number and note-on velocity
+/// - curves: linear, concave, convex, and switch
+/// - transforms: linear and absolute
+/// - destinations: attenuation, filter cutoff, pan, volume envelope timings,
+///   and static pitch offsets
+///
+/// The following SF2 features are intentionally not supported in the runtime
+/// engine because they would add significant hot-path and binary-size cost:
+/// - modulation envelope generators and destinations
+/// - modulation LFO / vibrato LFO generators and destinations
+/// - generic CC / aftertouch / pitch-wheel-driven SF2 modulators
+/// - chorus and reverb send behavior
 pub struct SampleSoundfont {
     instruments: Vec<SoundfontInstrument>,
     stream_params: AudioStreamParams,
@@ -241,7 +271,6 @@ impl SampleSoundfont {
         // Write region params
         for region in regions {
             let params = sample_cache_from_region_params(&region);
-            let envelope = envelope_descriptor_from_region_params(&region.ampeg_envelope);
 
             // Key value -1 is used for CC triggered regions which are not supported by XSynth
             if region.keyrange.contains(&-1) {
@@ -255,15 +284,15 @@ impl SampleSoundfont {
                         get_speed_mult_from_keys(key as u8, region.pitch_keycenter as u8)
                             * cents_factor(region.tune as f32);
 
-                    let mut envelope = envelope;
-                    envelope.release +=
+                    let mut envelope = region.ampeg_envelope.clone();
+                    envelope.ampeg_release +=
                         (vel as f32 / 127.0) * region.ampeg_envelope.ampeg_vel2release;
-
-                    let envelope_params = envelope.to_envelope_params(
-                        stream_params.sample_rate,
-                        options.vol_envelope_options,
+                    let envelope_params = Arc::new(
+                        envelope_descriptor_from_region_params(&envelope).to_envelope_params(
+                            stream_params.sample_rate,
+                            options.vol_envelope_options,
+                        ),
                     );
-                    let envelope_params = Arc::new(envelope_params);
 
                     let mut cutoff = None;
                     if options.use_effects {
@@ -324,6 +353,7 @@ impl SampleSoundfont {
                             sample_rate,
                             stream_params.sample_rate,
                         ),
+                        stop: None,
                     };
 
                     let mut region_samples = samples[&params].0.clone();
@@ -343,6 +373,7 @@ impl SampleSoundfont {
                         interpolator: options.interpolator,
                         loop_params,
                         sample: region_samples,
+                        exclusive_class: None,
                     });
 
                     spawner_params_list[index].push(spawner_params.clone());
@@ -395,26 +426,41 @@ impl SampleSoundfont {
                 spawner_params_list.push(Vec::new());
             }
 
-            for region in preset.regions {
-                let envelope_params = Arc::new(
-                    envelope_descriptor_from_region_params(&region.ampeg_envelope)
-                        .to_envelope_params(
-                            stream_params.sample_rate,
-                            options.vol_envelope_options,
-                        ),
-                );
+            let mut unique_envelope_params =
+                Vec::<(EnvelopeDescriptor, Arc<EnvelopeParameters>)>::new();
 
+            for region in preset.regions {
                 for key in region.keyrange.clone() {
                     for vel in region.velrange.clone() {
                         let index = key_vel_to_index(key, vel);
-                        let speed_mult = get_speed_mult_from_keys(key, region.root_key)
-                            * cents_factor(
-                                region.fine_tune as f32 + region.coarse_tune as f32 * 100.0,
-                            );
+                        let note_params = region.note_params(key, vel);
+                        let envelope =
+                            envelope_descriptor_from_region_params(&note_params.ampeg_envelope);
+                        let envelope_params = if let Some((_, params)) = unique_envelope_params
+                            .iter()
+                            .find(|(descriptor, _)| *descriptor == envelope)
+                        {
+                            params.clone()
+                        } else {
+                            let params = Arc::new(envelope.to_envelope_params(
+                                stream_params.sample_rate,
+                                options.vol_envelope_options,
+                            ));
+                            unique_envelope_params.push((envelope, params.clone()));
+                            params
+                        };
+                        let tuned_key_cents =
+                            (key as f32 - region.root_key as f32) * region.scale_tuning as f32;
+                        let speed_mult = cents_factor(
+                            tuned_key_cents
+                                + region.fine_tune as f32
+                                + region.coarse_tune as f32 * 100.0
+                                + note_params.tune_cents,
+                        );
 
                         let mut cutoff = None;
                         if options.use_effects {
-                            if let Some(cutoff_t) = region.cutoff {
+                            if let Some(cutoff_t) = note_params.cutoff {
                                 if cutoff_t >= 1.0 {
                                     cutoff = Some(cutoff_t.clamp(
                                         1.0,
@@ -424,8 +470,7 @@ impl SampleSoundfont {
                             }
                         }
 
-                        let pan = ((region.pan as f32 / 500.0) + 1.0) / 2.0;
-                        let volume = region.volume * (vel as f32 / 127.0).powi(2);
+                        let pan = ((note_params.pan as f32 / 500.0) + 1.0) / 2.0;
 
                         let loop_params = LoopParams {
                             mode: if region.loop_start == region.loop_end {
@@ -436,6 +481,7 @@ impl SampleSoundfont {
                             offset: region.offset,
                             start: region.loop_start,
                             end: region.loop_end,
+                            stop: Some(region.sample_end),
                         };
 
                         let mut region_samples = region.sample.clone();
@@ -448,15 +494,16 @@ impl SampleSoundfont {
 
                         let spawner_params = Arc::new(SampleVoiceSpawnerParams {
                             pan,
-                            volume,
-                            envelope: envelope_params.clone(),
+                            volume: note_params.volume,
+                            envelope: envelope_params,
                             speed_mult,
                             cutoff,
-                            resonance: db_to_amp(region.resonance) * Q_BUTTERWORTH_F32,
+                            resonance: db_to_amp(note_params.resonance) * Q_BUTTERWORTH_F32,
                             filter_type: FilterType::LowPass,
                             interpolator: options.interpolator,
                             loop_params,
                             sample: region_samples,
+                            exclusive_class: region.exclusive_class,
                         });
 
                         spawner_params_list[index].push(spawner_params.clone());

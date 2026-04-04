@@ -1,6 +1,6 @@
-use super::Sf2ParseError;
+use super::{Sf2ParseError, Sf2SampleLinkType};
 use crate::resample::resample_vec;
-use soundfont::raw::{SampleChunk, SampleData, SampleHeader, SampleLink};
+use soundfont::raw::{SampleChunk, SampleData, SampleHeader};
 use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom},
@@ -10,7 +10,9 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct Sf2Sample {
     pub data: Arc<[f32]>,
-    pub link_type: i8,
+    pub link_type: Sf2SampleLinkType,
+    pub linked_sample: Option<u16>,
+    pub original_length: u32,
     pub loop_start: u32,
     pub loop_end: u32,
     pub sample_rate: u32,
@@ -61,12 +63,12 @@ impl Sf2Sample {
             }
 
             for i in 0..extralen {
-                let n0 = 0;
-                let n1 = extra[i];
-                let n2 = smpl[i * 2];
-                let n3 = smpl[i * 2 + 1];
-                let sample = i32::from_le_bytes([n0, n1, n2, n3]);
-                let conv = sample as f32 / i32::MAX as f32;
+                let n0 = extra[i];
+                let n1 = smpl[i * 2];
+                let n2 = smpl[i * 2 + 1];
+                let sign = if (n2 & 0x80) != 0 { 0xFF } else { 0x00 };
+                let sample = i32::from_le_bytes([n0, n1, n2, sign]);
+                let conv = sample as f32 / 8_388_607.0;
                 samples.push(conv);
             }
         } else {
@@ -88,16 +90,17 @@ impl Sf2Sample {
             let sample: Vec<f32> = samples[start as usize..end as usize].into();
 
             let new = Sf2Sample {
-                data: if h.sample_rate != sample_rate || !sample.is_empty() {
+                data: if h.sample_rate != sample_rate && !sample.is_empty() {
                     resample_vec(sample, h.sample_rate as f32, sample_rate as f32)
                 } else {
                     sample.into()
                 },
-                link_type: match h.sample_type {
-                    SampleLink::LeftSample => -1,
-                    SampleLink::RightSample => 1,
-                    _ => 0,
+                link_type: h.sample_type.into(),
+                linked_sample: match h.sample_type.into() {
+                    Sf2SampleLinkType::Mono => None,
+                    _ => Some(h.sample_link),
                 },
+                original_length: end - start,
                 loop_start: h.loop_start - start,
                 loop_end: h.loop_end - start,
                 sample_rate: h.sample_rate,

@@ -14,7 +14,9 @@ pub trait AudioPipe {
     /// send a note off event for the same key, then on the next read the key
     /// will be released. If we don't, then the note will keep playing.
     fn read_samples(&mut self, to: &mut [f32]) {
-        assert!((to.len() as u32).is_multiple_of(self.stream_params().channels.count() as u32));
+        assert!(to
+            .len()
+            .is_multiple_of(self.stream_params().channels.count() as usize));
         self.read_samples_unchecked(to);
     }
 

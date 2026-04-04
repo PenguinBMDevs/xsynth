@@ -1,10 +1,15 @@
 # xsynth-render
 
-A command line utility for rendering MIDIs to audio using XSynth.
-It receives a MIDI file path and other parameters as arguments, and generates an audio file in WAV format.
+A workspace crate that provides XSynth's offline MIDI-to-WAV renderer and the `xsynth-render` CLI.
+The crate is intentionally unpublished from crates.io on this branch, but it remains reusable from the workspace as a library API.
 
-Use by running `cargo run -r -- <arguments>` if you are compiling from source
-or `xsynth-render <arguments>` if you are using a pre-built binary.
+The CLI receives a MIDI file path and other parameters as arguments, and generates an audio file in WAV format.
+
+Use it from source with `cargo run -p xsynth-render --release -- <arguments>`
+or as `xsynth-render <arguments>` when using a pre-built binary.
+
+Library consumers in the workspace can use `xsynth_render::OfflineWavRenderer`
+and `xsynth_render::OfflineRenderConfig`.
 
 ## Arguments
 

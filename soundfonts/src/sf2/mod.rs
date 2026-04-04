@@ -1,12 +1,19 @@
 use crate::{sfz::AmpegEnvelopeParams, LoopMode};
+use soundfont::raw::SampleLink;
 use std::{fs::File, ops::RangeInclusive, path::PathBuf, sync::Arc};
 
 use thiserror::Error;
 
 mod instrument;
+mod modulator;
 mod preset;
 mod sample;
 mod zone;
+
+pub use modulator::Sf2NoteParams;
+pub(crate) use modulator::{
+    default_note_modulators, default_raw_envelope, Sf2NoteModulator, Sf2RawEnvelope,
+};
 
 /// Errors that can be generated when loading an SF2 file.
 #[derive(Error, Debug, Clone)]
@@ -19,6 +26,13 @@ pub enum Sf2ParseError {
 }
 
 /// Structure that holds the generator and modulator parameters of an SF2 region.
+///
+/// XSynth's SF2 support is intentionally performance-first. Static region data
+/// and a practical subset of note-on modulators are resolved during load so the
+/// realtime engine can keep using pre-specialized voice paths. Runtime SF2
+/// modulation features such as modulation envelopes, LFO-driven modulation,
+/// CC/aftertouch-driven modulators, and chorus/reverb sends are intentionally
+/// omitted.
 #[derive(Clone, Debug)]
 pub struct Sf2Region {
     pub sample: Arc<[Arc<[f32]>]>,
@@ -32,11 +46,41 @@ pub struct Sf2Region {
     pub loop_start: u32,
     pub loop_end: u32,
     pub offset: u32,
+    pub sample_end: u32,
     pub cutoff: Option<f32>,
     pub resonance: f32,
     pub ampeg_envelope: AmpegEnvelopeParams,
     pub fine_tune: i16,
     pub coarse_tune: i16,
+    pub scale_tuning: i16,
+    pub exclusive_class: Option<u8>,
+    pub(crate) keynum_to_vol_env_hold: i16,
+    pub(crate) keynum_to_vol_env_decay: i16,
+    pub(crate) cutoff_cents: Option<i32>,
+    pub(crate) raw_envelope: Sf2RawEnvelope,
+    pub(crate) note_modulators: Arc<[Sf2NoteModulator]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Sf2SampleLinkType {
+    Mono,
+    Left,
+    Right,
+    Linked,
+}
+
+impl From<SampleLink> for Sf2SampleLinkType {
+    fn from(value: SampleLink) -> Self {
+        if value.is_left() {
+            Self::Left
+        } else if value.is_right() {
+            Self::Right
+        } else if value.is_linked() {
+            Self::Linked
+        } else {
+            Self::Mono
+        }
+    }
 }
 
 /// Structure that holds the parameters of an SF2 preset.
@@ -48,6 +92,11 @@ pub struct Sf2Preset {
 }
 
 /// Parses an SF2 file and returns its presets in a vector.
+///
+/// Supported behavior includes sample offsets/loops, stereo links, static
+/// filter and tuning generators, volume envelope generators, exclusive class,
+/// key/velocity ranges, and a baked subset of key/velocity note-on modulators.
+/// Full runtime SF2 modulation is intentionally outside scope.
 pub fn load_soundfont(
     sf2_path: impl Into<PathBuf>,
     sample_rate: u32,

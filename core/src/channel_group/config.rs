@@ -2,7 +2,11 @@ use crate::{channel::ChannelInitOptions, AudioStreamParams};
 
 /// Controls the channel format that will be used in the synthesizer.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(rename_all = "snake_case")
+)]
 pub enum SynthFormat {
     /// Standard MIDI format with 16 channels. Channel 10 will be used for percussion.
     #[default]
@@ -14,7 +18,11 @@ pub enum SynthFormat {
 
 /// Defines the multithreading options for each task that supports it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(rename_all = "snake_case")
+)]
 pub enum ThreadCount {
     /// No multithreading. Run everything on the same thread.
     None,

@@ -27,6 +27,7 @@ impl BiQuadFilter {
             Some(q) => q,
             None => Q_BUTTERWORTH_F32,
         };
+        let freq = sanitize_freq(freq, sample_rate);
 
         match fil_type {
             FilterType::LowPass => {
@@ -67,6 +68,12 @@ impl BiQuadFilter {
         }
         out
     }
+}
+
+fn sanitize_freq(freq: f32, sample_rate: f32) -> f32 {
+    let nyquist = (sample_rate * 0.5).max(1.0);
+    let max_freq = (nyquist - 1.0).max(1.0);
+    freq.clamp(1.0, max_freq)
 }
 
 /// A multi-channel bi-quad audio filter.

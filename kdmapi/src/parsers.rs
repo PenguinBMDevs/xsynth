@@ -25,24 +25,24 @@ impl<T> Config<T>
 where
     T: Default + Serialize + for<'a> Deserialize<'a> + ConfigPath,
 {
-    pub fn path() -> PathBuf {
+    pub fn path() -> Result<PathBuf, String> {
         match directories::BaseDirs::new() {
             Some(dirs) => {
                 let mut path = dirs.config_dir().to_path_buf();
                 path.push(CONFIG_DIR);
-                std::fs::create_dir_all(&path).unwrap();
+                std::fs::create_dir_all(&path).map_err(|e| format!("IO error: {e}"))?;
                 path.push(T::filename());
-                path
+                Ok(path)
             }
-            None => PathBuf::from("./"),
+            None => Ok(PathBuf::from("./")),
         }
     }
 
-    pub fn new() -> Self {
-        Self {
-            path: Config::<T>::path(),
+    pub fn new() -> Result<Self, String> {
+        Ok(Self {
+            path: Config::<T>::path()?,
             _config: PhantomData,
-        }
+        })
     }
 
     fn load_from_file(&self) -> Result<T, String> {

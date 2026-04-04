@@ -92,4 +92,5 @@ pub trait Voice: VoiceSampleGenerator + Send + Sync {
     fn is_killed(&self) -> bool;
 
     fn velocity(&self) -> u8;
+    fn exclusive_class(&self) -> Option<u8>;
 }

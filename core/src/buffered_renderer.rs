@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    io,
     sync::{
         atomic::{AtomicI64, AtomicUsize, Ordering},
         Arc, RwLock,
@@ -60,7 +61,11 @@ impl BufferedRendererStatsReader {
     pub fn average_renderer_load(&self) -> f64 {
         let queue = self.stats.render_time.read().unwrap();
         let total = queue.len();
-        queue.iter().sum::<f64>() / total as f64
+        if total == 0 {
+            0.0
+        } else {
+            queue.iter().sum::<f64>() / total as f64
+        }
     }
 
     /// The last render time percentage (0 to 1)
@@ -107,7 +112,7 @@ impl BufferedRenderer {
         mut render: F,
         stream_params: AudioStreamParams,
         render_size: usize,
-    ) -> Self {
+    ) -> Result<Self, io::Error> {
         let (tx, rx) = unbounded();
 
         let samples = Arc::new(AtomicI64::new(0));
@@ -182,11 +187,10 @@ impl BufferedRenderer {
                     if end > now {
                         spin_sleep::sleep(end - now);
                     }
-                })
-                .unwrap()
+                })?
         };
 
-        Self {
+        Ok(Self {
             stats: BufferedRendererStats {
                 samples,
                 last_request_samples,
@@ -199,7 +203,7 @@ impl BufferedRenderer {
             stream_params,
             thread_handle: Some(thread_handle),
             killed,
-        }
+        })
     }
 
     /// Reads samples from the remainder and the output queue into the destination array.
@@ -258,7 +262,11 @@ impl BufferedRenderer {
 impl Drop for BufferedRenderer {
     fn drop(&mut self) {
         *self.killed.write().unwrap() = true;
-        self.thread_handle.take().unwrap().join().unwrap();
+        if let Some(handle) = self.thread_handle.take() {
+            if handle.join().is_err() {
+                eprintln!("xsynth-core: buffered renderer thread panicked during shutdown");
+            }
+        }
     }
 }
 
@@ -269,5 +277,34 @@ impl AudioPipe for BufferedRenderer {
 
     fn read_samples_unchecked(&mut self, to: &mut [f32]) {
         self.read(to)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::VecDeque,
+        sync::{
+            atomic::{AtomicI64, AtomicUsize},
+            Arc, RwLock,
+        },
+    };
+
+    use super::{BufferedRendererStats, BufferedRendererStatsReader};
+
+    #[test]
+    fn average_renderer_load_is_zero_when_no_samples_have_been_rendered() {
+        let reader = BufferedRendererStatsReader {
+            stats: BufferedRendererStats {
+                samples: Arc::new(AtomicI64::new(0)),
+                last_samples_after_read: Arc::new(AtomicI64::new(0)),
+                last_request_samples: Arc::new(AtomicI64::new(0)),
+                render_time: Arc::new(RwLock::new(VecDeque::new())),
+                render_size: Arc::new(AtomicUsize::new(0)),
+            },
+        };
+
+        assert_eq!(reader.average_renderer_load(), 0.0);
+        assert_eq!(reader.last_renderer_load(), 0.0);
     }
 }

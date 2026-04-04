@@ -19,7 +19,7 @@ use xsynth_core::{
 };
 use xsynth_realtime::{RealtimeSynth, SynthEvent};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().collect::<Vec<String>>();
     let (Some(midi), Some(sfz)) = (
         args.get(1)
@@ -35,10 +35,10 @@ fn main() {
                 .unwrap_or("example".into())
                 .display()
         );
-        return;
+        return Ok(());
     };
 
-    let synth = RealtimeSynth::open_with_all_defaults();
+    let synth = RealtimeSynth::open_with_all_defaults()?;
     let mut sender = synth.get_sender_ref().clone();
 
     let params = synth.stream_params();
@@ -140,4 +140,5 @@ fn main() {
     }
 
     std::thread::sleep(Duration::from_secs(10000));
+    Ok(())
 }
