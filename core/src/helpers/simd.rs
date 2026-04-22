@@ -9,7 +9,7 @@ use core::arch::x86_64::*;
 ///
 /// Uses runtime selected SIMD operations with aggressive optimization.
 /// Panics if source and target have different lengths.
-#[inline(always)]
+#[inline]
 pub fn sum_simd(source: &[f32], target: &mut [f32]) {
     let len = source.len().min(target.len());
     if len == 0 {
@@ -132,7 +132,7 @@ unsafe fn sum_simd_sse2(source: &[f32], target: &mut [f32]) {
     }
 }
 
-#[inline(always)]
+#[inline]
 fn sum_simd_fallback(source: &[f32], target: &mut [f32]) {
     let len = source.len();
     let mut i = 0;

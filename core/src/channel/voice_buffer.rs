@@ -1,5 +1,6 @@
 use super::ChannelInitOptions;
 use crate::voice::{ReleaseType, Voice};
+use rustc_hash::FxHashSet;
 use std::ops::{Deref, DerefMut};
 
 /// A voice with its group ID for tracking
@@ -9,7 +10,7 @@ pub struct GroupVoice {
 }
 
 impl GroupVoice {
-    #[inline(always)]
+    #[inline]
     pub fn ended(&self) -> bool {
         self.voice.ended()
     }
@@ -18,14 +19,14 @@ impl GroupVoice {
 impl Deref for GroupVoice {
     type Target = Box<dyn Voice>;
 
-    #[inline(always)]
+    #[inline]
     fn deref(&self) -> &Self::Target {
         &self.voice
     }
 }
 
 impl DerefMut for GroupVoice {
-    #[inline(always)]
+    #[inline]
     fn deref_mut(&mut self) -> &mut Box<dyn Voice> {
         &mut self.voice
     }
@@ -38,7 +39,7 @@ pub struct VoiceBuffer {
     // Pre-allocated Vec for better performance with high voice counts
     voices: Vec<GroupVoice>,
     damper_held: bool,
-    held_by_damper: Vec<usize>,
+    held_by_damper: FxHashSet<usize>,
     pub max_voices: Option<usize>,
 }
 
@@ -51,12 +52,12 @@ impl VoiceBuffer {
             // Pre-allocate for high voice count scenarios
             voices: Vec::with_capacity(256),
             damper_held: false,
-            held_by_damper: Vec::with_capacity(16),
+            held_by_damper: FxHashSet::default(),
             max_voices,
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn get_id(&mut self) -> usize {
         self.id_counter += 1;
         self.id_counter
@@ -93,12 +94,17 @@ impl VoiceBuffer {
                     }
                 }
             } else {
-                self.voices.retain(|v| v.id != id);
+                let mut i = 0;
+                while i < self.voices.len() {
+                    if self.voices[i].id == id {
+                        self.voices.swap_remove(i);
+                    } else {
+                        i += 1;
+                    }
+                }
             }
 
-            if let Some(index) = self.held_by_damper.iter().position(|&x| x == id) {
-                self.held_by_damper.swap_remove(index);
-            }
+            self.held_by_damper.remove(&id);
         }
     }
 
@@ -113,7 +119,7 @@ impl VoiceBuffer {
         self.held_by_damper.clear();
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn push_voices(&mut self, voices: impl Iterator<Item = Box<dyn Voice>>) {
         let id = self.get_id();
 
@@ -171,7 +177,7 @@ impl VoiceBuffer {
                     continue;
                 }
 
-                self.held_by_damper.push(voice.id);
+                self.held_by_damper.insert(voice.id);
                 break;
             }
 
@@ -181,7 +187,7 @@ impl VoiceBuffer {
 
     /// Batch remove ended voices using swap_remove for efficiency
     /// swap_remove is O(1) per removal but changes order
-    #[inline(always)]
+    #[inline]
     pub fn remove_ended_voices(&mut self) {
         // Use swap_remove for O(1) per-element removal
         // This is faster than retain when removing many elements
@@ -202,23 +208,23 @@ impl VoiceBuffer {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn iter_voices_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn Voice>> {
         self.voices.iter_mut().map(|group| &mut group.voice)
     }
 
     /// Get mutable access to voices for parallel processing
-    #[inline(always)]
+    #[inline]
     pub fn get_voices_mut(&mut self) -> &mut [GroupVoice] {
         &mut self.voices
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn has_voices(&self) -> bool {
         !self.voices.is_empty()
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn voice_count(&self) -> usize {
         self.voices.len()
     }

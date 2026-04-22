@@ -79,6 +79,8 @@ pub struct BufferedRenderer {
     stats: BufferedRendererStats,
     /// The receiver for samples (the render thread has the sender).
     receive: Receiver<Vec<f32>>,
+    /// Sender for returning empty vecs to the render thread.
+    return_tx: crossbeam_channel::Sender<Vec<f32>>,
     /// Remainder of samples from the last received samples vec.
     remainder: Vec<f32>,
     /// Whether the render thread should be killed.
@@ -101,6 +103,7 @@ impl BufferedRenderer {
         render_size: usize,
     ) -> Self {
         let (tx, rx) = unbounded();
+        let (return_tx, return_rx) = unbounded();
 
         let samples = Arc::new(AtomicI64::new(0));
         let last_request_samples = Arc::new(AtomicI64::new(0));
@@ -144,9 +147,15 @@ impl BufferedRenderer {
                     let start = Instant::now();
                     let end = start + delay;
 
-                    // Create the vec and write the samples
-                    let mut vec =
-                        vec![0.0f32; size * stream_params.channels.count() as usize];
+                    // Reuse or create the vec and write the samples
+                    let required_len = size * stream_params.channels.count() as usize;
+                    let mut vec = return_rx
+                        .try_recv()
+                        .unwrap_or_else(|_| Vec::with_capacity(required_len));
+                    
+                    vec.resize(required_len, 0.0f32);
+                    vec.fill(0.0f32);
+                    
                     render.read_samples(&mut vec);
 
                     // Send the samples, break if the pipe is broken
@@ -185,6 +194,7 @@ impl BufferedRenderer {
                 last_samples_after_read,
             },
             receive: rx,
+            return_tx,
             remainder: Vec::new(),
             stream_params,
             thread_handle: Some(thread_handle),
@@ -213,10 +223,15 @@ impl BufferedRenderer {
             i += 1;
         }
 
+        // Return empty remainder vec to the pool
+        if self.remainder.is_empty() && self.remainder.capacity() > 0 {
+            let _ = self.return_tx.send(std::mem::take(&mut self.remainder));
+        }
+
         // Read from output queue, leave the remainder if there is any
         // Use a timeout to prevent infinite blocking and reduce latency
         let timeout = std::time::Duration::from_millis(100);
-        while self.remainder.is_empty() && i < dest.len() {
+        while i < dest.len() {
             match self.receive.recv_timeout(timeout) {
                 Ok(mut buf) => {
                     let len = buf.len().min(dest.len() - i);
@@ -224,7 +239,11 @@ impl BufferedRenderer {
                         dest[i] = r;
                         i += 1;
                     }
-                    self.remainder = buf;
+                    if buf.is_empty() {
+                        let _ = self.return_tx.send(buf);
+                    } else {
+                        self.remainder = buf;
+                    }
                 }
                 Err(_) => {
                     // Timeout - fill remaining with silence to prevent hanging

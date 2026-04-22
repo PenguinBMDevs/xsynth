@@ -24,15 +24,15 @@ impl<S: Simd> SIMDVoiceControl<S> {
 }
 
 impl<S: Simd> VoiceGeneratorBase for SIMDVoiceControl<S> {
-    #[inline(always)]
+    #[inline]
     fn ended(&self) -> bool {
         false
     }
 
-    #[inline(always)]
+    #[inline]
     fn signal_release(&mut self, _rel_type: ReleaseType) {}
 
-    #[inline(always)]
+    #[inline]
     fn process_controls(&mut self, control: &VoiceControlData) {
         simd_invoke!(S, {
             self.values = S::Vf32::set1((self.update)(control));
@@ -41,7 +41,7 @@ impl<S: Simd> VoiceGeneratorBase for SIMDVoiceControl<S> {
 }
 
 impl<S: Simd> SIMDVoiceGenerator<S, SIMDSampleMono<S>> for SIMDVoiceControl<S> {
-    #[inline(always)]
+    #[inline]
     fn next_sample(&mut self) -> SIMDSampleMono<S> {
         SIMDSampleMono(self.values)
     }

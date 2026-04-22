@@ -25,12 +25,12 @@ impl<T> VoiceGeneratorBase for VoiceBase<T>
 where
     T: Send + Sync + VoiceSampleGenerator,
 {
-    #[inline(always)]
+    #[inline]
     fn ended(&self) -> bool {
         self.sample_generator.ended()
     }
 
-    #[inline(always)]
+    #[inline]
     fn signal_release(&mut self, rel_type: ReleaseType) {
         match rel_type {
             ReleaseType::Standard => self.releasing = true,
@@ -39,7 +39,7 @@ where
         self.sample_generator.signal_release(rel_type)
     }
 
-    #[inline(always)]
+    #[inline]
     fn process_controls(&mut self, control: &VoiceControlData) {
         self.sample_generator.process_controls(control)
     }
@@ -49,7 +49,7 @@ impl<T> VoiceSampleGenerator for VoiceBase<T>
 where
     T: Send + Sync + VoiceSampleGenerator,
 {
-    #[inline(always)]
+    #[inline]
     fn render_to(&mut self, buffer: &mut [f32]) {
         self.sample_generator.render_to(buffer)
     }
@@ -59,17 +59,17 @@ impl<T> Voice for VoiceBase<T>
 where
     T: Send + Sync + VoiceSampleGenerator,
 {
-    #[inline(always)]
+    #[inline]
     fn is_releasing(&self) -> bool {
         self.releasing
     }
 
-    #[inline(always)]
+    #[inline]
     fn is_killed(&self) -> bool {
         self.killed
     }
 
-    #[inline(always)]
+    #[inline]
     fn velocity(&self) -> u8 {
         self.velocity
     }

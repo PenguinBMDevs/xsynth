@@ -29,7 +29,7 @@ impl KeyData {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn send_event(
         &mut self,
         event: KeyNoteEvent,
@@ -60,7 +60,7 @@ impl KeyData {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn process_controls(&mut self, control: &VoiceControlData) {
         for voice in &mut self.voices.iter_voices_mut() {
             voice.process_controls(control);
@@ -69,7 +69,7 @@ impl KeyData {
 
     /// Ultra-optimized sequential rendering
     /// Each voice adds directly to the output buffer
-    #[inline(always)]
+    #[inline]
     pub fn render_to(&mut self, out: &mut [f32]) {
         let voice_count = self.voices.voice_count();
         if voice_count == 0 {
@@ -88,7 +88,7 @@ impl KeyData {
         self.update_voice_counter(self.voices.voice_count());
     }
 
-    #[inline(always)]
+    #[inline]
     fn update_voice_counter(&mut self, new_count: usize) {
         let change = new_count as i64 - self.last_voice_count as i64;
         if change < 0 {
@@ -101,12 +101,12 @@ impl KeyData {
         self.last_voice_count = new_count;
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn has_voices(&self) -> bool {
         self.voices.has_voices()
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn set_damper(&mut self, damper: bool) {
         self.voices.set_damper(damper);
     }
