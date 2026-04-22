@@ -32,17 +32,17 @@ where
     S: Simd,
     G: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
 {
-    #[inline(always)]
+    #[inline]
     fn ended(&self) -> bool {
         self.generator.ended()
     }
 
-    #[inline(always)]
+    #[inline]
     fn signal_release(&mut self, rel_type: ReleaseType) {
         self.generator.signal_release(rel_type)
     }
 
-    #[inline(always)]
+    #[inline]
     fn process_controls(&mut self, control: &VoiceControlData) {
         self.generator.process_controls(control)
     }
@@ -53,7 +53,7 @@ where
     S: Simd,
     G: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
 {
-    #[inline(always)]
+    #[inline]
     fn next_sample(&mut self) -> SIMDSampleStereo<S> {
         simd_invoke!(S, {
             let sample = self.generator.next_sample();
