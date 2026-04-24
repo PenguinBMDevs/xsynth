@@ -1,0 +1,1476 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index f5d13f3..a00d699 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -137,7 +137,7 @@ dependencies = [
+  "proc-macro2",
+  "quote",
+  "regex",
+- "rustc-hash",
++ "rustc-hash 1.1.0",
+  "shlex",
+  "syn 1.0.109",
+ ]
+@@ -1420,6 +1420,12 @@ version = "1.1.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+ 
++[[package]]
++name = "rustc-hash"
++version = "2.1.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
++
+ [[package]]
+ name = "rustix"
+ version = "0.37.13"
+@@ -2207,6 +2213,7 @@ dependencies = [
+  "proc-macro2",
+  "rand",
+  "rayon",
++ "rustc-hash 2.1.2",
+  "serde",
+  "simdeez",
+  "soundfont",
+diff --git a/core/Cargo.toml b/core/Cargo.toml
+index 248acb7..3981bb9 100644
+--- a/core/Cargo.toml
++++ b/core/Cargo.toml
+@@ -27,6 +27,7 @@ biquad = "0.4.2"
+ simdeez = "2.0.0-dev3"
+ proc-macro2 = "1.0.86"
+ serde = { version = "1.0", optional = true, features = ["derive"] }
++rustc-hash = "2.1.2"
+ 
+ [features]
+ serde = ["dep:serde"]
+diff --git a/core/src/buffered_renderer.rs b/core/src/buffered_renderer.rs
+index 9ce337a..0909cda 100644
+--- a/core/src/buffered_renderer.rs
++++ b/core/src/buffered_renderer.rs
+@@ -79,6 +79,8 @@ pub struct BufferedRenderer {
+     stats: BufferedRendererStats,
+     /// The receiver for samples (the render thread has the sender).
+     receive: Receiver<Vec<f32>>,
++    /// Sender for returning empty vecs to the render thread.
++    return_tx: crossbeam_channel::Sender<Vec<f32>>,
+     /// Remainder of samples from the last received samples vec.
+     remainder: Vec<f32>,
+     /// Whether the render thread should be killed.
+@@ -101,6 +103,7 @@ impl BufferedRenderer {
+         render_size: usize,
+     ) -> Self {
+         let (tx, rx) = unbounded();
++        let (return_tx, return_rx) = unbounded();
+ 
+         let samples = Arc::new(AtomicI64::new(0));
+         let last_request_samples = Arc::new(AtomicI64::new(0));
+@@ -144,9 +147,15 @@ impl BufferedRenderer {
+                     let start = Instant::now();
+                     let end = start + delay;
+ 
+-                    // Create the vec and write the samples
+-                    let mut vec =
+-                        vec![0.0f32; size * stream_params.channels.count() as usize];
++                    // Reuse or create the vec and write the samples
++                    let required_len = size * stream_params.channels.count() as usize;
++                    let mut vec = return_rx
++                        .try_recv()
++                        .unwrap_or_else(|_| Vec::with_capacity(required_len));
++                    
++                    vec.resize(required_len, 0.0f32);
++                    vec.fill(0.0f32);
++                    
+                     render.read_samples(&mut vec);
+ 
+                     // Send the samples, break if the pipe is broken
+@@ -185,6 +194,7 @@ impl BufferedRenderer {
+                 last_samples_after_read,
+             },
+             receive: rx,
++            return_tx,
+             remainder: Vec::new(),
+             stream_params,
+             thread_handle: Some(thread_handle),
+@@ -213,10 +223,15 @@ impl BufferedRenderer {
+             i += 1;
+         }
+ 
++        // Return empty remainder vec to the pool
++        if self.remainder.is_empty() && self.remainder.capacity() > 0 {
++            let _ = self.return_tx.send(std::mem::take(&mut self.remainder));
++        }
++
+         // Read from output queue, leave the remainder if there is any
+         // Use a timeout to prevent infinite blocking and reduce latency
+         let timeout = std::time::Duration::from_millis(100);
+-        while self.remainder.is_empty() && i < dest.len() {
++        while i < dest.len() {
+             match self.receive.recv_timeout(timeout) {
+                 Ok(mut buf) => {
+                     let len = buf.len().min(dest.len() - i);
+@@ -224,7 +239,11 @@ impl BufferedRenderer {
+                         dest[i] = r;
+                         i += 1;
+                     }
+-                    self.remainder = buf;
++                    if buf.is_empty() {
++                        let _ = self.return_tx.send(buf);
++                    } else {
++                        self.remainder = buf;
++                    }
+                 }
+                 Err(_) => {
+                     // Timeout - fill remaining with silence to prevent hanging
+diff --git a/core/src/channel/channel_sf.rs b/core/src/channel/channel_sf.rs
+index 7f69e67..45db511 100644
+--- a/core/src/channel/channel_sf.rs
++++ b/core/src/channel/channel_sf.rs
+@@ -23,7 +23,7 @@ pub struct ChannelSoundfont {
+ impl Deref for ChannelSoundfont {
+     type Target = VoiceSpawnerMatrix;
+ 
+-    #[inline(always)]
++    #[inline]
+     fn deref(&self) -> &Self::Target {
+         &self.matrix
+     }
+diff --git a/core/src/channel/key.rs b/core/src/channel/key.rs
+index 5e8a2cc..e737831 100644
+--- a/core/src/channel/key.rs
++++ b/core/src/channel/key.rs
+@@ -29,7 +29,7 @@ impl KeyData {
+         }
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn send_event(
+         &mut self,
+         event: KeyNoteEvent,
+@@ -60,7 +60,7 @@ impl KeyData {
+         }
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn process_controls(&mut self, control: &VoiceControlData) {
+         for voice in &mut self.voices.iter_voices_mut() {
+             voice.process_controls(control);
+@@ -69,7 +69,7 @@ impl KeyData {
+ 
+     /// Ultra-optimized sequential rendering
+     /// Each voice adds directly to the output buffer
+-    #[inline(always)]
++    #[inline]
+     pub fn render_to(&mut self, out: &mut [f32]) {
+         let voice_count = self.voices.voice_count();
+         if voice_count == 0 {
+@@ -88,7 +88,7 @@ impl KeyData {
+         self.update_voice_counter(self.voices.voice_count());
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn update_voice_counter(&mut self, new_count: usize) {
+         let change = new_count as i64 - self.last_voice_count as i64;
+         if change < 0 {
+@@ -101,12 +101,12 @@ impl KeyData {
+         self.last_voice_count = new_count;
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn has_voices(&self) -> bool {
+         self.voices.has_voices()
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn set_damper(&mut self, damper: bool) {
+         self.voices.set_damper(damper);
+     }
+diff --git a/core/src/channel/voice_buffer.rs b/core/src/channel/voice_buffer.rs
+index 73206a1..e305983 100644
+--- a/core/src/channel/voice_buffer.rs
++++ b/core/src/channel/voice_buffer.rs
+@@ -1,5 +1,6 @@
+ use super::ChannelInitOptions;
+ use crate::voice::{ReleaseType, Voice};
++use rustc_hash::FxHashSet;
+ use std::ops::{Deref, DerefMut};
+ 
+ /// A voice with its group ID for tracking
+@@ -9,7 +10,7 @@ pub struct GroupVoice {
+ }
+ 
+ impl GroupVoice {
+-    #[inline(always)]
++    #[inline]
+     pub fn ended(&self) -> bool {
+         self.voice.ended()
+     }
+@@ -18,14 +19,14 @@ impl GroupVoice {
+ impl Deref for GroupVoice {
+     type Target = Box<dyn Voice>;
+ 
+-    #[inline(always)]
++    #[inline]
+     fn deref(&self) -> &Self::Target {
+         &self.voice
+     }
+ }
+ 
+ impl DerefMut for GroupVoice {
+-    #[inline(always)]
++    #[inline]
+     fn deref_mut(&mut self) -> &mut Box<dyn Voice> {
+         &mut self.voice
+     }
+@@ -38,7 +39,7 @@ pub struct VoiceBuffer {
+     // Pre-allocated Vec for better performance with high voice counts
+     voices: Vec<GroupVoice>,
+     damper_held: bool,
+-    held_by_damper: Vec<usize>,
++    held_by_damper: FxHashSet<usize>,
+     pub max_voices: Option<usize>,
+ }
+ 
+@@ -51,12 +52,12 @@ impl VoiceBuffer {
+             // Pre-allocate for high voice count scenarios
+             voices: Vec::with_capacity(256),
+             damper_held: false,
+-            held_by_damper: Vec::with_capacity(16),
++            held_by_damper: FxHashSet::default(),
+             max_voices,
+         }
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn get_id(&mut self) -> usize {
+         self.id_counter += 1;
+         self.id_counter
+@@ -93,12 +94,17 @@ impl VoiceBuffer {
+                     }
+                 }
+             } else {
+-                self.voices.retain(|v| v.id != id);
++                let mut i = 0;
++                while i < self.voices.len() {
++                    if self.voices[i].id == id {
++                        self.voices.swap_remove(i);
++                    } else {
++                        i += 1;
++                    }
++                }
+             }
+ 
+-            if let Some(index) = self.held_by_damper.iter().position(|&x| x == id) {
+-                self.held_by_damper.swap_remove(index);
+-            }
++            self.held_by_damper.remove(&id);
+         }
+     }
+ 
+@@ -113,7 +119,7 @@ impl VoiceBuffer {
+         self.held_by_damper.clear();
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn push_voices(&mut self, voices: impl Iterator<Item = Box<dyn Voice>>) {
+         let id = self.get_id();
+ 
+@@ -171,7 +177,7 @@ impl VoiceBuffer {
+                     continue;
+                 }
+ 
+-                self.held_by_damper.push(voice.id);
++                self.held_by_damper.insert(voice.id);
+                 break;
+             }
+ 
+@@ -181,7 +187,7 @@ impl VoiceBuffer {
+ 
+     /// Batch remove ended voices using swap_remove for efficiency
+     /// swap_remove is O(1) per removal but changes order
+-    #[inline(always)]
++    #[inline]
+     pub fn remove_ended_voices(&mut self) {
+         // Use swap_remove for O(1) per-element removal
+         // This is faster than retain when removing many elements
+@@ -202,23 +208,23 @@ impl VoiceBuffer {
+         }
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn iter_voices_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn Voice>> {
+         self.voices.iter_mut().map(|group| &mut group.voice)
+     }
+ 
+     /// Get mutable access to voices for parallel processing
+-    #[inline(always)]
++    #[inline]
+     pub fn get_voices_mut(&mut self) -> &mut [GroupVoice] {
+         &mut self.voices
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn has_voices(&self) -> bool {
+         !self.voices.is_empty()
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn voice_count(&self) -> usize {
+         self.voices.len()
+     }
+diff --git a/core/src/channel/voice_spawner.rs b/core/src/channel/voice_spawner.rs
+index 7d456d7..2bc51d1 100644
+--- a/core/src/channel/voice_spawner.rs
++++ b/core/src/channel/voice_spawner.rs
+@@ -33,27 +33,27 @@ impl VoiceSpawnerMatrix {
+         }
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn get_spawners_index_at_attack(&self, key: u8, vel: u8) -> usize {
+         key as usize + vel as usize * 128
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn get_spawners_index_at_release(&self, key: u8, vel: u8) -> usize {
+         key as usize + vel as usize * 128
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn get_attack_spawners_vec_at(&self, key: u8, vel: u8) -> &Vec<Box<dyn VoiceSpawner>> {
+         &self.voice_spawners_attack[self.get_spawners_index_at_attack(key, vel)]
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn get_release_spawners_vec_at(&self, key: u8, vel: u8) -> &Vec<Box<dyn VoiceSpawner>> {
+         &self.voice_spawners_release[self.get_spawners_index_at_release(key, vel)]
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn spawn_voices_attack<'a>(
+         &'a self,
+         control: &'a VoiceControlData,
+@@ -63,7 +63,7 @@ impl VoiceSpawnerMatrix {
+         voice_iter_from_vec(self.get_attack_spawners_vec_at(key, vel), control)
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn spawn_voices_release<'a>(
+         &'a self,
+         control: &'a VoiceControlData,
+@@ -73,13 +73,13 @@ impl VoiceSpawnerMatrix {
+         voice_iter_from_vec(self.get_release_spawners_vec_at(key, vel), control)
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn set_spawners_attack(&mut self, key: u8, vel: u8, spawners: Vec<Box<dyn VoiceSpawner>>) {
+         let index = self.get_spawners_index_at_attack(key, vel);
+         self.voice_spawners_attack[index] = spawners;
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn set_spawners_release(&mut self, key: u8, vel: u8, spawners: Vec<Box<dyn VoiceSpawner>>) {
+         let index = self.get_spawners_index_at_release(key, vel);
+         self.voice_spawners_release[index] = spawners;
+diff --git a/core/src/effects/filter.rs b/core/src/effects/filter.rs
+index 3f2a68b..26fa290 100644
+--- a/core/src/effects/filter.rs
++++ b/core/src/effects/filter.rs
+@@ -1,6 +1,5 @@
+ use crate::channel::ValueLerp;
+ use biquad::*;
+-use simdeez::prelude::*;
+ pub use xsynth_soundfonts::FilterType;
+ 
+ #[derive(Clone)]
+@@ -58,15 +57,6 @@ impl BiQuadFilter {
+     pub fn process(&mut self, input: f32) -> f32 {
+         self.filter.run(input)
+     }
+-
+-    #[inline(always)]
+-    pub fn process_simd<S: Simd>(&mut self, input: S::Vf32) -> S::Vf32 {
+-        let mut out = input;
+-        for i in 0..S::Vf32::WIDTH {
+-            out[i] = self.process(input[i]);
+-        }
+-        out
+-    }
+ }
+ 
+ /// A multi-channel bi-quad audio filter.
+@@ -128,10 +118,14 @@ impl MultiChannelBiQuad {
+     /// Filters the audio of the given sample buffer.
+     pub fn process(&mut self, sample: &mut [f32]) {
+         let channel_count = self.channels.len();
++        let mut last_v = None;
+         for (i, s) in sample.iter_mut().enumerate() {
+             if i % channel_count == 0 {
+                 let v = self.value.get_next();
+-                self.set_coefficients(v, self.q);
++                if Some(v) != last_v {
++                    self.set_coefficients(v, self.q);
++                    last_v = Some(v);
++                }
+             }
+             *s = self.channels[i % channel_count].process(*s);
+         }
+diff --git a/core/src/helpers.rs b/core/src/helpers.rs
+index 884a8f2..0ed2c78 100644
+--- a/core/src/helpers.rs
++++ b/core/src/helpers.rs
+@@ -8,7 +8,7 @@ mod simd;
+ pub use simd::*;
+ 
+ /// Take any f32 vec, set its length and fill it with the default value.
+-#[inline(always)]
++#[inline]
+ pub fn prepapre_cache_vec<T: Copy>(vec: &mut Vec<T>, len: usize, default: T) {
+     if vec.len() < len {
+         vec.reserve(len - vec.len());
+@@ -20,7 +20,7 @@ pub fn prepapre_cache_vec<T: Copy>(vec: &mut Vec<T>, len: usize, default: T) {
+ }
+ 
+ /// Fast zero-fill for f32 buffers using SIMD-like operations
+-#[inline(always)]
++#[inline]
+ pub fn fast_zero_fill(vec: &mut Vec<f32>, len: usize) {
+     if vec.len() < len {
+         vec.reserve(len - vec.len());
+@@ -39,7 +39,7 @@ thread_local! {
+ }
+ 
+ /// Get a buffer from the thread-local pool or create a new one
+-#[inline(always)]
++#[inline]
+ pub fn get_render_buffer(size: usize) -> Vec<f32> {
+     VOICE_RENDER_BUFFERS.with(|pool| {
+         let mut pool = pool.borrow_mut();
+@@ -57,7 +57,7 @@ pub fn get_render_buffer(size: usize) -> Vec<f32> {
+ }
+ 
+ /// Return a buffer to the thread-local pool
+-#[inline(always)]
++#[inline]
+ pub fn return_render_buffer(buf: Vec<f32>) {
+     VOICE_RENDER_BUFFERS.with(|pool| {
+         let mut pool = pool.borrow_mut();
+@@ -70,43 +70,11 @@ pub fn return_render_buffer(buf: Vec<f32>) {
+ 
+ /// Ultra-fast SIMD sum of multiple buffers into target
+ /// Uses unsafe code to eliminate bounds checking
+-#[inline(always)]
++#[inline]
+ pub fn sum_buffers_to_target(sources: &[Vec<f32>], target: &mut [f32]) {
+-    if sources.is_empty() {
+-        return;
+-    }
+-    
+-    let len = target.len();
+-    
+-    // Process 8 elements at a time for better cache utilization
+-    let chunks = len / 8;
+-    let remainder = len % 8;
+-    
+     for source in sources {
+-        debug_assert!(source.len() >= len);
+-        
+-        unsafe {
+-            let src_ptr = source.as_ptr();
+-            let dst_ptr = target.as_mut_ptr();
+-            
+-            // Unrolled loop for 8 elements at a time
+-            for i in 0..chunks {
+-                let base = i * 8;
+-                *dst_ptr.add(base) += *src_ptr.add(base);
+-                *dst_ptr.add(base + 1) += *src_ptr.add(base + 1);
+-                *dst_ptr.add(base + 2) += *src_ptr.add(base + 2);
+-                *dst_ptr.add(base + 3) += *src_ptr.add(base + 3);
+-                *dst_ptr.add(base + 4) += *src_ptr.add(base + 4);
+-                *dst_ptr.add(base + 5) += *src_ptr.add(base + 5);
+-                *dst_ptr.add(base + 6) += *src_ptr.add(base + 6);
+-                *dst_ptr.add(base + 7) += *src_ptr.add(base + 7);
+-            }
+-            
+-            // Handle remainder
+-            let base = chunks * 8;
+-            for i in 0..remainder {
+-                *dst_ptr.add(base + i) += *src_ptr.add(base + i);
+-            }
++        for (dst, src) in target.iter_mut().zip(source.iter()) {
++            *dst += *src;
+         }
+     }
+ }
+diff --git a/core/src/helpers/simd.rs b/core/src/helpers/simd.rs
+index 34e8590..1df2e8a 100644
+--- a/core/src/helpers/simd.rs
++++ b/core/src/helpers/simd.rs
+@@ -9,7 +9,7 @@ use core::arch::x86_64::*;
+ ///
+ /// Uses runtime selected SIMD operations with aggressive optimization.
+ /// Panics if source and target have different lengths.
+-#[inline(always)]
++#[inline]
+ pub fn sum_simd(source: &[f32], target: &mut [f32]) {
+     let len = source.len().min(target.len());
+     if len == 0 {
+@@ -132,7 +132,7 @@ unsafe fn sum_simd_sse2(source: &[f32], target: &mut [f32]) {
+     }
+ }
+ 
+-#[inline(always)]
++#[inline]
+ fn sum_simd_fallback(source: &[f32], target: &mut [f32]) {
+     let len = source.len();
+     let mut i = 0;
+diff --git a/core/src/voice/base.rs b/core/src/voice/base.rs
+index 30890bd..bf549f5 100644
+--- a/core/src/voice/base.rs
++++ b/core/src/voice/base.rs
+@@ -25,12 +25,12 @@ impl<T> VoiceGeneratorBase for VoiceBase<T>
+ where
+     T: Send + Sync + VoiceSampleGenerator,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn ended(&self) -> bool {
+         self.sample_generator.ended()
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self, rel_type: ReleaseType) {
+         match rel_type {
+             ReleaseType::Standard => self.releasing = true,
+@@ -39,7 +39,7 @@ where
+         self.sample_generator.signal_release(rel_type)
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn process_controls(&mut self, control: &VoiceControlData) {
+         self.sample_generator.process_controls(control)
+     }
+@@ -49,7 +49,7 @@ impl<T> VoiceSampleGenerator for VoiceBase<T>
+ where
+     T: Send + Sync + VoiceSampleGenerator,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn render_to(&mut self, buffer: &mut [f32]) {
+         self.sample_generator.render_to(buffer)
+     }
+@@ -59,17 +59,17 @@ impl<T> Voice for VoiceBase<T>
+ where
+     T: Send + Sync + VoiceSampleGenerator,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn is_releasing(&self) -> bool {
+         self.releasing
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn is_killed(&self) -> bool {
+         self.killed
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn velocity(&self) -> u8 {
+         self.velocity
+     }
+diff --git a/core/src/voice/channels.rs b/core/src/voice/channels.rs
+index 63251ea..10b9e3c 100644
+--- a/core/src/voice/channels.rs
++++ b/core/src/voice/channels.rs
+@@ -32,17 +32,17 @@ where
+     S: Simd,
+     G: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn ended(&self) -> bool {
+         self.generator.ended()
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self, rel_type: ReleaseType) {
+         self.generator.signal_release(rel_type)
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn process_controls(&mut self, control: &VoiceControlData) {
+         self.generator.process_controls(control)
+     }
+@@ -53,7 +53,7 @@ where
+     S: Simd,
+     G: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn next_sample(&mut self) -> SIMDSampleStereo<S> {
+         simd_invoke!(S, {
+             let sample = self.generator.next_sample();
+diff --git a/core/src/voice/constant.rs b/core/src/voice/constant.rs
+index 4e7f642..93e4e8c 100644
+--- a/core/src/voice/constant.rs
++++ b/core/src/voice/constant.rs
+@@ -19,20 +19,20 @@ impl<S: Simd> SIMDConstant<S> {
+ }
+ 
+ impl<S: Simd> VoiceGeneratorBase for SIMDConstant<S> {
+-    #[inline(always)]
++    #[inline]
+     fn ended(&self) -> bool {
+         false
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self, _rel_type: ReleaseType) {}
+ 
+-    #[inline(always)]
++    #[inline]
+     fn process_controls(&mut self, _control: &VoiceControlData) {}
+ }
+ 
+ impl<S: Simd> SIMDVoiceGenerator<S, SIMDSampleMono<S>> for SIMDConstant<S> {
+-    #[inline(always)]
++    #[inline]
+     fn next_sample(&mut self) -> SIMDSampleMono<S> {
+         SIMDSampleMono(self.values)
+     }
+@@ -55,20 +55,20 @@ impl<S: Simd> SIMDConstantStereo<S> {
+ }
+ 
+ impl<S: Simd> VoiceGeneratorBase for SIMDConstantStereo<S> {
+-    #[inline(always)]
++    #[inline]
+     fn ended(&self) -> bool {
+         false
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self, _rel_type: ReleaseType) {}
+ 
+-    #[inline(always)]
++    #[inline]
+     fn process_controls(&mut self, _control: &VoiceControlData) {}
+ }
+ 
+ impl<S: Simd> SIMDVoiceGenerator<S, SIMDSampleStereo<S>> for SIMDConstantStereo<S> {
+-    #[inline(always)]
++    #[inline]
+     fn next_sample(&mut self) -> SIMDSampleStereo<S> {
+         SIMDSampleStereo(self.values_left, self.values_right)
+     }
+diff --git a/core/src/voice/control.rs b/core/src/voice/control.rs
+index 4188d76..94007c4 100644
+--- a/core/src/voice/control.rs
++++ b/core/src/voice/control.rs
+@@ -24,15 +24,15 @@ impl<S: Simd> SIMDVoiceControl<S> {
+ }
+ 
+ impl<S: Simd> VoiceGeneratorBase for SIMDVoiceControl<S> {
+-    #[inline(always)]
++    #[inline]
+     fn ended(&self) -> bool {
+         false
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self, _rel_type: ReleaseType) {}
+ 
+-    #[inline(always)]
++    #[inline]
+     fn process_controls(&mut self, control: &VoiceControlData) {
+         simd_invoke!(S, {
+             self.values = S::Vf32::set1((self.update)(control));
+@@ -41,7 +41,7 @@ impl<S: Simd> VoiceGeneratorBase for SIMDVoiceControl<S> {
+ }
+ 
+ impl<S: Simd> SIMDVoiceGenerator<S, SIMDSampleMono<S>> for SIMDVoiceControl<S> {
+-    #[inline(always)]
++    #[inline]
+     fn next_sample(&mut self) -> SIMDSampleMono<S> {
+         SIMDSampleMono(self.values)
+     }
+diff --git a/core/src/voice/cutoff.rs b/core/src/voice/cutoff.rs
+index 1047d0b..780b803 100644
+--- a/core/src/voice/cutoff.rs
++++ b/core/src/voice/cutoff.rs
+@@ -38,17 +38,17 @@ where
+     S: Simd,
+     V: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn ended(&self) -> bool {
+         self.v.ended()
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self, rel_type: ReleaseType) {
+         self.v.signal_release(rel_type);
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn process_controls(&mut self, control: &VoiceControlData) {
+         self.v.process_controls(control);
+     }
+@@ -59,11 +59,13 @@ where
+     S: Simd,
+     V: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn next_sample(&mut self) -> SIMDSampleMono<S> {
+         simd_invoke!(S, {
+             let mut next_sample = self.v.next_sample();
+-            next_sample.0 = self.cutoff.process_simd::<S>(next_sample.0);
++            for i in 0..S::Vf32::WIDTH {
++                next_sample.0[i] = self.cutoff.process(next_sample.0[i]);
++            }
+             next_sample
+         })
+     }
+@@ -100,17 +102,17 @@ where
+     S: Simd,
+     V: SIMDVoiceGenerator<S, SIMDSampleStereo<S>>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn ended(&self) -> bool {
+         self.v.ended()
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self, rel_type: ReleaseType) {
+         self.v.signal_release(rel_type);
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn process_controls(&mut self, control: &VoiceControlData) {
+         self.v.process_controls(control);
+     }
+@@ -121,12 +123,14 @@ where
+     S: Simd,
+     V: SIMDVoiceGenerator<S, SIMDSampleStereo<S>>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn next_sample(&mut self) -> SIMDSampleStereo<S> {
+         simd_invoke!(S, {
+             let mut next_sample = self.v.next_sample();
+-            next_sample.0 = self.cutoff1.process_simd::<S>(next_sample.0);
+-            next_sample.1 = self.cutoff2.process_simd::<S>(next_sample.1);
++            for i in 0..S::Vf32::WIDTH {
++                next_sample.0[i] = self.cutoff1.process(next_sample.0[i]);
++                next_sample.1[i] = self.cutoff2.process(next_sample.1[i]);
++            }
+             next_sample
+         })
+     }
+diff --git a/core/src/voice/envelopes.rs b/core/src/voice/envelopes.rs
+index dd352f0..a6816ac 100644
+--- a/core/src/voice/envelopes.rs
++++ b/core/src/voice/envelopes.rs
+@@ -159,56 +159,56 @@ impl<T: Simd> StageTime<T> {
+         })
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn increment(&mut self) {
+         simd_invoke!(T, self.stage_time_simd += self.increment_simd);
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn increment_by(&mut self, by: u32) {
+         simd_invoke!(T, self.stage_time_simd += T::Vf32::set1(by as f32));
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     /// Is the upper most value in the SIMD array past the end?
+     pub fn is_ending(&self) -> bool {
+         self.simd_array_end_f32() >= self.stage_end_time_f32
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     /// Is the SIMD array intersecting the end? Or has it completely passed the end
+     pub fn is_intersecting_end(&self) -> bool {
+         self.is_ending() && self.simd_array_start_f32() < self.stage_end_time_f32
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn raw_simd_array(&self) -> &T::Vf32 {
+         &self.stage_time_simd
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn progress_simd_array(&self) -> T::Vf32 {
+         simd_invoke!(T, *self.raw_simd_array() / self.stage_end_time_simd)
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn simd_array_start_f32(&self) -> f32 {
+         self.stage_time_simd[0]
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     pub fn simd_array_end_f32(&self) -> f32 {
+         self.stage_time_simd[T::Vf32::WIDTH - 1]
+     }
+ 
+     #[allow(unused)]
+-    #[inline(always)]
++    #[inline]
+     pub fn simd_array_start(&self) -> u32 {
+         self.simd_array_start_f32() as u32
+     }
+ 
+     #[allow(unused)]
+-    #[inline(always)]
++    #[inline]
+     pub fn simd_array_end(&self) -> u32 {
+         self.simd_array_end_f32() as u32
+     }
+@@ -512,24 +512,48 @@ impl<T: Simd> SIMDVoiceEnvelope<T> {
+ 
+     fn manually_build_simd_sample(&mut self) -> SIMDSampleMono<T> {
+         simd_invoke!(T, {
+-            let mut values = T::Vf32::set1(0.0);
+-            for i in 0..T::Vf32::WIDTH {
+-                let sample = self.get_value_at_current_time();
+-                values[i] = sample;
+-                self.increment_time_by(1);
+-                let should_progress = match &mut self.state.stage_data {
+-                    StageData::Lerp(_, stage_time)
+-                    | StageData::LerpConcave(_, stage_time)
+-                    | StageData::LerpConvex(_, stage_time) => {
+-                        stage_time.is_ending() && !stage_time.is_intersecting_end()
++            let is_ending = match &self.state.stage_data {
++                StageData::Lerp(_, stage_time)
++                | StageData::LerpConcave(_, stage_time)
++                | StageData::LerpConvex(_, stage_time) => stage_time.is_ending(),
++                StageData::Constant(_) => false,
++            };
++
++            if !is_ending {
++                let values = match &self.state.stage_data {
++                    StageData::Lerp(lerper, stage_time) => {
++                        lerper.lerp_simd(stage_time.progress_simd_array())
++                    }
++                    StageData::LerpConcave(lerper, stage_time) => {
++                        lerper.lerp_simd(stage_time.progress_simd_array())
+                     }
+-                    StageData::Constant(_) => false,
++                    StageData::LerpConvex(lerper, stage_time) => {
++                        lerper.lerp_simd(stage_time.progress_simd_array())
++                    }
++                    StageData::Constant(constant) => *constant,
+                 };
+-                if should_progress {
+-                    self.switch_to_next_stage();
++                self.increment_time_by(T::Vf32::WIDTH as u32);
++                SIMDSampleMono(values)
++            } else {
++                let mut values = T::Vf32::set1(0.0);
++                for i in 0..T::Vf32::WIDTH {
++                    let sample = self.get_value_at_current_time();
++                    values[i] = sample;
++                    self.increment_time_by(1);
++                    let should_progress = match &mut self.state.stage_data {
++                        StageData::Lerp(_, stage_time)
++                        | StageData::LerpConcave(_, stage_time)
++                        | StageData::LerpConvex(_, stage_time) => {
++                            stage_time.is_ending() && !stage_time.is_intersecting_end()
++                        }
++                        StageData::Constant(_) => false,
++                    };
++                    if should_progress {
++                        self.switch_to_next_stage();
++                    }
+                 }
++                SIMDSampleMono(values)
+             }
+-            SIMDSampleMono(values)
+         })
+     }
+ 
+@@ -596,12 +620,12 @@ impl<T: Simd> SIMDVoiceEnvelope<T> {
+ }
+ 
+ impl<T: Simd> VoiceGeneratorBase for SIMDVoiceEnvelope<T> {
+-    #[inline(always)]
++    #[inline]
+     fn ended(&self) -> bool {
+         self.state.current_stage == EnvelopeStage::Finished
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self, rel_type: ReleaseType) {
+         if rel_type == ReleaseType::Kill {
+             self.params.modify_stage_data(
+@@ -617,14 +641,14 @@ impl<T: Simd> VoiceGeneratorBase for SIMDVoiceEnvelope<T> {
+         }
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn process_controls(&mut self, control: &VoiceControlData) {
+         self.modify_envelope(control.envelope);
+     }
+ }
+ 
+ impl<T: Simd> SIMDVoiceGenerator<T, SIMDSampleMono<T>> for SIMDVoiceEnvelope<T> {
+-    #[inline(always)]
++    #[inline]
+     fn next_sample(&mut self) -> SIMDSampleMono<T> {
+         simd_invoke!(T, {
+             // Use loop instead of recursion to avoid function call overhead
+diff --git a/core/src/voice/sampler.rs b/core/src/voice/sampler.rs
+index 1a88c94..0b36b6a 100644
+--- a/core/src/voice/sampler.rs
++++ b/core/src/voice/sampler.rs
+@@ -47,22 +47,18 @@ pub trait SIMDSampleGrabber<S: Simd>: Send + Sync {
+ pub struct F32BufferSampler(Arc<[f32]>);
+ 
+ impl BufferSampler for F32BufferSampler {
+-    #[inline(always)]
++    #[inline]
+     fn get(&self, pos: usize) -> f32 {
+         // SAFETY: Callers ensure pos is within bounds via is_past_end checks
+         // Use unchecked access for maximum performance in the hot path
+-        if pos < self.0.len() {
+-            unsafe { *self.0.get_unchecked(pos) }
+-        } else {
+-            0.0
+-        }
++        unsafe { *self.0.get_unchecked(pos) }
+     }
+ 
+     fn length(&self) -> usize {
+         self.0.len()
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn ptr(&self) -> *const f32 {
+         self.0.as_ptr()
+     }
+@@ -75,14 +71,14 @@ pub enum BufferSamplers {
+ }
+ 
+ impl BufferSamplers {
+-    #[inline(always)]
++    #[inline]
+     pub fn new_f32(sample: Arc<[f32]>) -> BufferSamplers {
+         BufferSamplers::F32(F32BufferSampler(sample))
+     }
+ }
+ 
+ impl BufferSampler for BufferSamplers {
+-    #[inline(always)]
++    #[inline]
+     fn get(&self, pos: usize) -> f32 {
+         match self {
+             BufferSamplers::F32(sampler) => sampler.get(pos),
+@@ -95,7 +91,7 @@ impl BufferSampler for BufferSamplers {
+         }
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn ptr(&self) -> *const f32 {
+         match self {
+             BufferSamplers::F32(sampler) => sampler.ptr(),
+@@ -156,7 +152,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderNoLoop<Sampler> {
+     fn signal_release(&mut self) {}
+ 
+     #[cfg(target_arch = "x86_64")]
+-    #[inline(always)]
++    #[inline]
+     unsafe fn get_simd_avx2(
+         &mut self,
+         indexes: std::arch::x86_64::__m256i,
+@@ -168,7 +164,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderNoLoop<Sampler> {
+     }
+ 
+     #[cfg(target_arch = "aarch64")]
+-    #[inline(always)]
++    #[inline]
+     unsafe fn get_simd_neon(
+         &mut self,
+         indexes: std::arch::aarch64::int32x4_t,
+@@ -225,7 +221,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoop<Sampler> {
+     fn signal_release(&mut self) {}
+ 
+     #[cfg(target_arch = "x86_64")]
+-    #[inline(always)]
++    #[inline]
+     unsafe fn get_simd_avx2(
+         &mut self,
+         indexes: std::arch::x86_64::__m256i,
+@@ -262,7 +258,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoop<Sampler> {
+     }
+ 
+     #[cfg(target_arch = "aarch64")]
+-    #[inline(always)]
++    #[inline]
+     unsafe fn get_simd_neon(
+         &mut self,
+         indexes: std::arch::aarch64::int32x4_t,
+@@ -362,7 +358,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoopSustain<Sampler> {
+     }
+ 
+     #[cfg(target_arch = "x86_64")]
+-    #[inline(always)]
++    #[inline]
+     unsafe fn get_simd_avx2(
+         &mut self,
+         indexes: std::arch::x86_64::__m256i,
+@@ -413,7 +409,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoopSustain<Sampler> {
+     }
+ 
+     #[cfg(target_arch = "aarch64")]
+-    #[inline(always)]
++    #[inline]
+     unsafe fn get_simd_neon(
+         &mut self,
+         indexes: std::arch::aarch64::int32x4_t,
+@@ -472,7 +468,7 @@ impl<S: Simd, Reader: SampleReader> SIMDSampleGrabbers<S, Reader> {
+ }
+ 
+ impl<S: Simd, Reader: SampleReader> SIMDSampleGrabber<S> for SIMDSampleGrabbers<S, Reader> {
+-    #[inline(always)]
++    #[inline]
+     fn get(&mut self, indexes: S::Vi32, fractional: S::Vf32) -> S::Vf32 {
+         match self {
+             SIMDSampleGrabbers::Linear(grabber) => grabber.get(indexes, fractional),
+@@ -480,7 +476,7 @@ impl<S: Simd, Reader: SampleReader> SIMDSampleGrabber<S> for SIMDSampleGrabbers<
+         }
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn is_past_end(&self, pos: f64) -> bool {
+         match self {
+             SIMDSampleGrabbers::Linear(grabber) => grabber.is_past_end(pos),
+@@ -488,7 +484,7 @@ impl<S: Simd, Reader: SampleReader> SIMDSampleGrabber<S> for SIMDSampleGrabbers<
+         }
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self) {
+         match self {
+             SIMDSampleGrabbers::Linear(grabber) => grabber.signal_release(),
+@@ -542,18 +538,18 @@ where
+     Pitch: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
+     Grabber: SIMDSampleGrabber<S>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn ended(&self) -> bool {
+         self.grabber.is_past_end(self.time)
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self, rel_type: ReleaseType) {
+         self.pitch_gen.signal_release(rel_type);
+         self.grabber.signal_release();
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn process_controls(&mut self, control: &VoiceControlData) {
+         self.pitch_gen.process_controls(control);
+     }
+@@ -566,7 +562,7 @@ where
+     Pitch: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
+     Grabber: SIMDSampleGrabber<S>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn next_sample(&mut self) -> SIMDSampleMono<S> {
+         simd_invoke!(S, {
+             let speed = self.pitch_gen.next_sample().0;
+@@ -682,19 +678,19 @@ where
+     Pitch: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
+     Grabber: SIMDSampleGrabber<S>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn ended(&self) -> bool {
+         self.grabber_left.is_past_end(self.time) || self.grabber_right.is_past_end(self.time)
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self, rel_type: ReleaseType) {
+         self.pitch_gen.signal_release(rel_type);
+         self.grabber_left.signal_release();
+         self.grabber_right.signal_release();
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn process_controls(&mut self, control: &VoiceControlData) {
+         self.pitch_gen.process_controls(control);
+     }
+@@ -707,7 +703,7 @@ where
+     Pitch: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
+     Grabber: SIMDSampleGrabber<S>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn next_sample(&mut self) -> SIMDSampleStereo<S> {
+         simd_invoke!(S, {
+             let speed = self.pitch_gen.next_sample().0;
+diff --git a/core/src/voice/simd.rs b/core/src/voice/simd.rs
+index 668f835..bdff3f6 100644
+--- a/core/src/voice/simd.rs
++++ b/core/src/voice/simd.rs
+@@ -154,18 +154,18 @@ where
+     V2: SIMDVoiceGenerator<T, TO>,
+     F: Sync + Send + Fn(TI, TO) -> TO,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn ended(&self) -> bool {
+         self.v1.ended() || self.v2.ended()
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self, rel_type: ReleaseType) {
+         self.v1.signal_release(rel_type);
+         self.v2.signal_release(rel_type);
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn process_controls(&mut self, control: &VoiceControlData) {
+         self.v1.process_controls(control);
+         self.v2.process_controls(control);
+@@ -181,7 +181,7 @@ where
+     V2: SIMDVoiceGenerator<T, TO>,
+     F: Sync + Send + Fn(TI, TO) -> TO,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn next_sample(&mut self) -> TO {
+         simd_invoke!(T, {
+             (self.func)(self.v1.next_sample(), self.v2.next_sample())
+@@ -200,7 +200,7 @@ impl<T: Simd> VoiceCombineSIMD<T> {
+         V1: SIMDVoiceGenerator<T, TI>,
+         V2: SIMDVoiceGenerator<T, TO>,
+     {
+-        #[inline(always)]
++        #[inline]
+         fn mult<T, TI, TO>(a: TI, b: TO) -> TO
+         where
+             T: Simd,
+@@ -220,7 +220,7 @@ impl<T: Simd> VoiceCombineSIMD<T> {
+         V1: SIMDVoiceGenerator<T, TI>,
+         V2: SIMDVoiceGenerator<T, TO>,
+     {
+-        #[inline(always)]
++        #[inline]
+         fn add<T, TI, TO>(a: TI, b: TO) -> TO
+         where
+             T: Simd,
+diff --git a/core/src/voice/simdvoice.rs b/core/src/voice/simdvoice.rs
+index 53f7494..308637d 100644
+--- a/core/src/voice/simdvoice.rs
++++ b/core/src/voice/simdvoice.rs
+@@ -32,17 +32,17 @@ where
+     S: Simd,
+     T: SIMDVoiceGenerator<S, SIMDSampleStereo<S>>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn ended(&self) -> bool {
+         self.generator.ended()
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self, rel_type: ReleaseType) {
+         self.generator.signal_release(rel_type)
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn process_controls(&mut self, control: &VoiceControlData) {
+         self.generator.process_controls(control)
+     }
+@@ -53,7 +53,7 @@ where
+     S: Simd,
+     T: SIMDVoiceGenerator<S, SIMDSampleStereo<S>>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn render_to(&mut self, buffer: &mut [f32]) {
+         simd_invoke!(S, {
+             let width = S::Vf32::WIDTH;
+@@ -196,17 +196,17 @@ where
+     S: Simd,
+     T: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn ended(&self) -> bool {
+         self.generator.ended()
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self, rel_type: ReleaseType) {
+         self.generator.signal_release(rel_type)
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn process_controls(&mut self, control: &VoiceControlData) {
+         self.generator.process_controls(control)
+     }
+@@ -217,7 +217,7 @@ where
+     S: Simd,
+     T: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn render_to(&mut self, buffer: &mut [f32]) {
+         simd_invoke!(S, {
+             let width = S::Vf32::WIDTH;
+diff --git a/core/src/voice/squarewave.rs b/core/src/voice/squarewave.rs
+index bd14744..fbbfc32 100644
+--- a/core/src/voice/squarewave.rs
++++ b/core/src/voice/squarewave.rs
+@@ -39,17 +39,17 @@ where
+     S: Simd,
+     Pitch: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn ended(&self) -> bool {
+         false
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn signal_release(&mut self, rel_type: ReleaseType) {
+         self.pitch_gen.signal_release(rel_type);
+     }
+ 
+-    #[inline(always)]
++    #[inline]
+     fn process_controls(&mut self, control: &VoiceControlData) {
+         self.pitch_gen.process_controls(control);
+     }
+@@ -60,7 +60,7 @@ where
+     S: Simd,
+     Pitch: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
+ {
+-    #[inline(always)]
++    #[inline]
+     fn next_sample(&mut self) -> SIMDSampleMono<S> {
+         simd_invoke!(S, {
+             let mut values = S::Vf32::zeroes();
+diff --git a/realtime/src/realtime_synth.rs b/realtime/src/realtime_synth.rs
+index 3cc95b3..e7d5cdc 100644
+--- a/realtime/src/realtime_synth.rs
++++ b/realtime/src/realtime_synth.rs
+@@ -2,15 +2,14 @@ use std::{
+     sync::{
+         atomic::{AtomicU64, Ordering},
+         Arc,
+-    },
+-    thread::{self},
++    }
+ };
+ 
+ use cpal::{
+     traits::{DeviceTrait, HostTrait, StreamTrait},
+     Device, PauseStreamError, PlayStreamError, SizedSample, Stream, SupportedStreamConfig,
+ };
+-use crossbeam_channel::{bounded, unbounded};
++use crossbeam_channel::unbounded;
+ 
+ use xsynth_core::{
+     buffered_renderer::{BufferedRenderer, BufferedRendererStatsReader},
+@@ -84,7 +83,6 @@ struct RealtimeSynthThreadSharedData {
+ /// A realtime MIDI synthesizer using an audio device for output.
+ pub struct RealtimeSynth {
+     data: Option<RealtimeSynthThreadSharedData>,
+-    join_handles: Vec<thread::JoinHandle<()>>,
+ 
+     stats: RealtimeSynthStats,
+ 
+@@ -136,7 +134,6 @@ impl RealtimeSynth {
+     ) -> Self {
+         let mut channel_stats = Vec::new();
+         let mut senders = Vec::new();
+-        let mut command_senders = Vec::new();
+ 
+         let sample_rate = stream_config.sample_rate().0;
+         let stream_params = AudioStreamParams::new(sample_rate, stream_config.channels().into());
+@@ -157,39 +154,20 @@ impl RealtimeSynth {
+             SynthFormat::Custom { channels } => channels,
+         };
+ 
+-        let (output_sender, output_receiver) = bounded::<Vec<f32>>(channel_count as usize);
+-
+-        let mut thread_handles = vec![];
++        let mut channels = Vec::new();
++        let mut event_receivers = Vec::new();
+ 
+         for _ in 0u32..channel_count {
+-            let mut channel =
++            let channel =
+                 VoiceChannel::new(config.channel_init_options, stream_params, pool.clone());
+             let stats = channel.get_channel_stats();
+             channel_stats.push(stats);
+ 
+             let (event_sender, event_receiver) = unbounded();
+             senders.push(event_sender);
+-
+-            let (command_sender, command_receiver) = bounded::<Vec<f32>>(1);
+-
+-            command_senders.push(command_sender);
+-
+-            let output_sender = output_sender.clone();
+-            let join_handle = thread::Builder::new()
+-                .name("xsynth_channel_handler".to_string())
+-                .spawn(move || loop {
+-                    channel.push_events_iter(event_receiver.try_iter());
+-                    let mut vec = match command_receiver.recv() {
+-                        Ok(vec) => vec,
+-                        Err(_) => break,
+-                    };
+-                    channel.push_events_iter(event_receiver.try_iter());
+-                    channel.read_samples(&mut vec);
+-                    output_sender.send(vec).unwrap();
+-                })
+-                .unwrap();
+-
+-            thread_handles.push(join_handle);
++            
++            channels.push(channel);
++            event_receivers.push(event_receiver);
+         }
+ 
+         if config.format == SynthFormat::Midi {
+@@ -200,9 +178,9 @@ impl RealtimeSynth {
+                 .unwrap();
+         }
+ 
+-        let mut vec_cache: std::collections::VecDeque<Vec<f32>> = std::collections::VecDeque::new();
++        let mut vec_cache: Vec<Vec<f32>> = Vec::new();
+         for _ in 0..channel_count {
+-            vec_cache.push_front(Vec::new());
++            vec_cache.push(Vec::new());
+         }
+ 
+         let stats = RealtimeSynthStats::new();
+@@ -210,17 +188,33 @@ impl RealtimeSynth {
+         let total_voice_count = stats.voice_count.clone();
+ 
+         let render = FunctionAudioPipe::new(stream_params, move |out| {
+-            for sender in command_senders.iter() {
+-                let mut buf = vec_cache.pop_front().unwrap();
+-                fast_zero_fill(&mut buf, out.len());
+-
+-                sender.send(buf).unwrap();
++            if let Some(pool) = &pool {
++                use rayon::prelude::*;
++                pool.install(|| {
++                    channels
++                        .par_iter_mut()
++                        .zip(event_receivers.par_iter())
++                        .zip(vec_cache.par_iter_mut())
++                        .for_each(|((channel, event_receiver), buf)| {
++                            channel.push_events_iter(event_receiver.try_iter());
++                            fast_zero_fill(buf, out.len());
++                            channel.read_samples(buf);
++                        });
++                });
++            } else {
++                for ((channel, event_receiver), buf) in channels
++                    .iter_mut()
++                    .zip(event_receivers.iter())
++                    .zip(vec_cache.iter_mut())
++                {
++                    channel.push_events_iter(event_receiver.try_iter());
++                    fast_zero_fill(buf, out.len());
++                    channel.read_samples(buf);
++                }
+             }
+ 
+-            for _ in 0..channel_count {
+-                let buf = output_receiver.recv().unwrap();
+-                sum_simd(&buf, out);
+-                vec_cache.push_front(buf);
++            for buf in vec_cache.iter() {
++                sum_simd(buf, out);
+             }
+ 
+             let total_voices = channel_stats.iter().map(|c| c.voice_count()).sum();
+@@ -277,7 +271,6 @@ impl RealtimeSynth {
+                 event_senders: RealtimeEventSender::new(senders, max_nps, config.ignore_range),
+                 stream: SendSyncStream(stream),
+             }),
+-            join_handles: thread_handles,
+ 
+             stats,
+             stream_params,
+@@ -360,9 +353,6 @@ impl Drop for RealtimeSynth {
+     fn drop(&mut self) {
+         let data = self.data.take().unwrap();
+         drop(data);
+-        for handle in self.join_handles.drain(..) {
+-            handle.join().unwrap();
+-        }
+     }
+ }
+ 

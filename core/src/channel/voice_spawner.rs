@@ -33,27 +33,27 @@ impl VoiceSpawnerMatrix {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn get_spawners_index_at_attack(&self, key: u8, vel: u8) -> usize {
         key as usize + vel as usize * 128
     }
 
-    #[inline(always)]
+    #[inline]
     fn get_spawners_index_at_release(&self, key: u8, vel: u8) -> usize {
         key as usize + vel as usize * 128
     }
 
-    #[inline(always)]
+    #[inline]
     fn get_attack_spawners_vec_at(&self, key: u8, vel: u8) -> &Vec<Box<dyn VoiceSpawner>> {
         &self.voice_spawners_attack[self.get_spawners_index_at_attack(key, vel)]
     }
 
-    #[inline(always)]
+    #[inline]
     fn get_release_spawners_vec_at(&self, key: u8, vel: u8) -> &Vec<Box<dyn VoiceSpawner>> {
         &self.voice_spawners_release[self.get_spawners_index_at_release(key, vel)]
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn spawn_voices_attack<'a>(
         &'a self,
         control: &'a VoiceControlData,
@@ -63,7 +63,7 @@ impl VoiceSpawnerMatrix {
         voice_iter_from_vec(self.get_attack_spawners_vec_at(key, vel), control)
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn spawn_voices_release<'a>(
         &'a self,
         control: &'a VoiceControlData,
@@ -73,13 +73,13 @@ impl VoiceSpawnerMatrix {
         voice_iter_from_vec(self.get_release_spawners_vec_at(key, vel), control)
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn set_spawners_attack(&mut self, key: u8, vel: u8, spawners: Vec<Box<dyn VoiceSpawner>>) {
         let index = self.get_spawners_index_at_attack(key, vel);
         self.voice_spawners_attack[index] = spawners;
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn set_spawners_release(&mut self, key: u8, vel: u8, spawners: Vec<Box<dyn VoiceSpawner>>) {
         let index = self.get_spawners_index_at_release(key, vel);
         self.voice_spawners_release[index] = spawners;

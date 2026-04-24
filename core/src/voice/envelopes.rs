@@ -159,56 +159,56 @@ impl<T: Simd> StageTime<T> {
         })
     }
 
-    #[inline(always)]
+    #[inline]
     fn increment(&mut self) {
         simd_invoke!(T, self.stage_time_simd += self.increment_simd);
     }
 
-    #[inline(always)]
+    #[inline]
     fn increment_by(&mut self, by: u32) {
         simd_invoke!(T, self.stage_time_simd += T::Vf32::set1(by as f32));
     }
 
-    #[inline(always)]
+    #[inline]
     /// Is the upper most value in the SIMD array past the end?
     pub fn is_ending(&self) -> bool {
         self.simd_array_end_f32() >= self.stage_end_time_f32
     }
 
-    #[inline(always)]
+    #[inline]
     /// Is the SIMD array intersecting the end? Or has it completely passed the end
     pub fn is_intersecting_end(&self) -> bool {
         self.is_ending() && self.simd_array_start_f32() < self.stage_end_time_f32
     }
 
-    #[inline(always)]
+    #[inline]
     fn raw_simd_array(&self) -> &T::Vf32 {
         &self.stage_time_simd
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn progress_simd_array(&self) -> T::Vf32 {
         simd_invoke!(T, *self.raw_simd_array() / self.stage_end_time_simd)
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn simd_array_start_f32(&self) -> f32 {
         self.stage_time_simd[0]
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn simd_array_end_f32(&self) -> f32 {
         self.stage_time_simd[T::Vf32::WIDTH - 1]
     }
 
     #[allow(unused)]
-    #[inline(always)]
+    #[inline]
     pub fn simd_array_start(&self) -> u32 {
         self.simd_array_start_f32() as u32
     }
 
     #[allow(unused)]
-    #[inline(always)]
+    #[inline]
     pub fn simd_array_end(&self) -> u32 {
         self.simd_array_end_f32() as u32
     }
@@ -512,24 +512,48 @@ impl<T: Simd> SIMDVoiceEnvelope<T> {
 
     fn manually_build_simd_sample(&mut self) -> SIMDSampleMono<T> {
         simd_invoke!(T, {
-            let mut values = T::Vf32::set1(0.0);
-            for i in 0..T::Vf32::WIDTH {
-                let sample = self.get_value_at_current_time();
-                values[i] = sample;
-                self.increment_time_by(1);
-                let should_progress = match &mut self.state.stage_data {
-                    StageData::Lerp(_, stage_time)
-                    | StageData::LerpConcave(_, stage_time)
-                    | StageData::LerpConvex(_, stage_time) => {
-                        stage_time.is_ending() && !stage_time.is_intersecting_end()
+            let is_ending = match &self.state.stage_data {
+                StageData::Lerp(_, stage_time)
+                | StageData::LerpConcave(_, stage_time)
+                | StageData::LerpConvex(_, stage_time) => stage_time.is_ending(),
+                StageData::Constant(_) => false,
+            };
+
+            if !is_ending {
+                let values = match &self.state.stage_data {
+                    StageData::Lerp(lerper, stage_time) => {
+                        lerper.lerp_simd(stage_time.progress_simd_array())
                     }
-                    StageData::Constant(_) => false,
+                    StageData::LerpConcave(lerper, stage_time) => {
+                        lerper.lerp_simd(stage_time.progress_simd_array())
+                    }
+                    StageData::LerpConvex(lerper, stage_time) => {
+                        lerper.lerp_simd(stage_time.progress_simd_array())
+                    }
+                    StageData::Constant(constant) => *constant,
                 };
-                if should_progress {
-                    self.switch_to_next_stage();
+                self.increment_time_by(T::Vf32::WIDTH as u32);
+                SIMDSampleMono(values)
+            } else {
+                let mut values = T::Vf32::set1(0.0);
+                for i in 0..T::Vf32::WIDTH {
+                    let sample = self.get_value_at_current_time();
+                    values[i] = sample;
+                    self.increment_time_by(1);
+                    let should_progress = match &mut self.state.stage_data {
+                        StageData::Lerp(_, stage_time)
+                        | StageData::LerpConcave(_, stage_time)
+                        | StageData::LerpConvex(_, stage_time) => {
+                            stage_time.is_ending() && !stage_time.is_intersecting_end()
+                        }
+                        StageData::Constant(_) => false,
+                    };
+                    if should_progress {
+                        self.switch_to_next_stage();
+                    }
                 }
+                SIMDSampleMono(values)
             }
-            SIMDSampleMono(values)
         })
     }
 
@@ -596,12 +620,12 @@ impl<T: Simd> SIMDVoiceEnvelope<T> {
 }
 
 impl<T: Simd> VoiceGeneratorBase for SIMDVoiceEnvelope<T> {
-    #[inline(always)]
+    #[inline]
     fn ended(&self) -> bool {
         self.state.current_stage == EnvelopeStage::Finished
     }
 
-    #[inline(always)]
+    #[inline]
     fn signal_release(&mut self, rel_type: ReleaseType) {
         if rel_type == ReleaseType::Kill {
             self.params.modify_stage_data(
@@ -617,14 +641,14 @@ impl<T: Simd> VoiceGeneratorBase for SIMDVoiceEnvelope<T> {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn process_controls(&mut self, control: &VoiceControlData) {
         self.modify_envelope(control.envelope);
     }
 }
 
 impl<T: Simd> SIMDVoiceGenerator<T, SIMDSampleMono<T>> for SIMDVoiceEnvelope<T> {
-    #[inline(always)]
+    #[inline]
     fn next_sample(&mut self) -> SIMDSampleMono<T> {
         simd_invoke!(T, {
             // Use loop instead of recursion to avoid function call overhead

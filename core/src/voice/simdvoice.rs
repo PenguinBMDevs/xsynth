@@ -32,17 +32,17 @@ where
     S: Simd,
     T: SIMDVoiceGenerator<S, SIMDSampleStereo<S>>,
 {
-    #[inline(always)]
+    #[inline]
     fn ended(&self) -> bool {
         self.generator.ended()
     }
 
-    #[inline(always)]
+    #[inline]
     fn signal_release(&mut self, rel_type: ReleaseType) {
         self.generator.signal_release(rel_type)
     }
 
-    #[inline(always)]
+    #[inline]
     fn process_controls(&mut self, control: &VoiceControlData) {
         self.generator.process_controls(control)
     }
@@ -53,7 +53,7 @@ where
     S: Simd,
     T: SIMDVoiceGenerator<S, SIMDSampleStereo<S>>,
 {
-    #[inline(always)]
+    #[inline]
     fn render_to(&mut self, buffer: &mut [f32]) {
         simd_invoke!(S, {
             let width = S::Vf32::WIDTH;
@@ -196,17 +196,17 @@ where
     S: Simd,
     T: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
 {
-    #[inline(always)]
+    #[inline]
     fn ended(&self) -> bool {
         self.generator.ended()
     }
 
-    #[inline(always)]
+    #[inline]
     fn signal_release(&mut self, rel_type: ReleaseType) {
         self.generator.signal_release(rel_type)
     }
 
-    #[inline(always)]
+    #[inline]
     fn process_controls(&mut self, control: &VoiceControlData) {
         self.generator.process_controls(control)
     }
@@ -217,7 +217,7 @@ where
     S: Simd,
     T: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
 {
-    #[inline(always)]
+    #[inline]
     fn render_to(&mut self, buffer: &mut [f32]) {
         simd_invoke!(S, {
             let width = S::Vf32::WIDTH;

@@ -47,22 +47,18 @@ pub trait SIMDSampleGrabber<S: Simd>: Send + Sync {
 pub struct F32BufferSampler(Arc<[f32]>);
 
 impl BufferSampler for F32BufferSampler {
-    #[inline(always)]
+    #[inline]
     fn get(&self, pos: usize) -> f32 {
         // SAFETY: Callers ensure pos is within bounds via is_past_end checks
         // Use unchecked access for maximum performance in the hot path
-        if pos < self.0.len() {
-            unsafe { *self.0.get_unchecked(pos) }
-        } else {
-            0.0
-        }
+        unsafe { *self.0.get_unchecked(pos) }
     }
 
     fn length(&self) -> usize {
         self.0.len()
     }
 
-    #[inline(always)]
+    #[inline]
     fn ptr(&self) -> *const f32 {
         self.0.as_ptr()
     }
@@ -75,14 +71,14 @@ pub enum BufferSamplers {
 }
 
 impl BufferSamplers {
-    #[inline(always)]
+    #[inline]
     pub fn new_f32(sample: Arc<[f32]>) -> BufferSamplers {
         BufferSamplers::F32(F32BufferSampler(sample))
     }
 }
 
 impl BufferSampler for BufferSamplers {
-    #[inline(always)]
+    #[inline]
     fn get(&self, pos: usize) -> f32 {
         match self {
             BufferSamplers::F32(sampler) => sampler.get(pos),
@@ -95,7 +91,7 @@ impl BufferSampler for BufferSamplers {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn ptr(&self) -> *const f32 {
         match self {
             BufferSamplers::F32(sampler) => sampler.ptr(),
@@ -156,7 +152,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderNoLoop<Sampler> {
     fn signal_release(&mut self) {}
 
     #[cfg(target_arch = "x86_64")]
-    #[inline(always)]
+    #[inline]
     unsafe fn get_simd_avx2(
         &mut self,
         indexes: std::arch::x86_64::__m256i,
@@ -168,7 +164,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderNoLoop<Sampler> {
     }
 
     #[cfg(target_arch = "aarch64")]
-    #[inline(always)]
+    #[inline]
     unsafe fn get_simd_neon(
         &mut self,
         indexes: std::arch::aarch64::int32x4_t,
@@ -225,7 +221,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoop<Sampler> {
     fn signal_release(&mut self) {}
 
     #[cfg(target_arch = "x86_64")]
-    #[inline(always)]
+    #[inline]
     unsafe fn get_simd_avx2(
         &mut self,
         indexes: std::arch::x86_64::__m256i,
@@ -262,7 +258,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoop<Sampler> {
     }
 
     #[cfg(target_arch = "aarch64")]
-    #[inline(always)]
+    #[inline]
     unsafe fn get_simd_neon(
         &mut self,
         indexes: std::arch::aarch64::int32x4_t,
@@ -362,7 +358,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoopSustain<Sampler> {
     }
 
     #[cfg(target_arch = "x86_64")]
-    #[inline(always)]
+    #[inline]
     unsafe fn get_simd_avx2(
         &mut self,
         indexes: std::arch::x86_64::__m256i,
@@ -413,7 +409,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoopSustain<Sampler> {
     }
 
     #[cfg(target_arch = "aarch64")]
-    #[inline(always)]
+    #[inline]
     unsafe fn get_simd_neon(
         &mut self,
         indexes: std::arch::aarch64::int32x4_t,
@@ -472,7 +468,7 @@ impl<S: Simd, Reader: SampleReader> SIMDSampleGrabbers<S, Reader> {
 }
 
 impl<S: Simd, Reader: SampleReader> SIMDSampleGrabber<S> for SIMDSampleGrabbers<S, Reader> {
-    #[inline(always)]
+    #[inline]
     fn get(&mut self, indexes: S::Vi32, fractional: S::Vf32) -> S::Vf32 {
         match self {
             SIMDSampleGrabbers::Linear(grabber) => grabber.get(indexes, fractional),
@@ -480,7 +476,7 @@ impl<S: Simd, Reader: SampleReader> SIMDSampleGrabber<S> for SIMDSampleGrabbers<
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn is_past_end(&self, pos: f64) -> bool {
         match self {
             SIMDSampleGrabbers::Linear(grabber) => grabber.is_past_end(pos),
@@ -488,7 +484,7 @@ impl<S: Simd, Reader: SampleReader> SIMDSampleGrabber<S> for SIMDSampleGrabbers<
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn signal_release(&mut self) {
         match self {
             SIMDSampleGrabbers::Linear(grabber) => grabber.signal_release(),
@@ -542,18 +538,18 @@ where
     Pitch: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
     Grabber: SIMDSampleGrabber<S>,
 {
-    #[inline(always)]
+    #[inline]
     fn ended(&self) -> bool {
         self.grabber.is_past_end(self.time)
     }
 
-    #[inline(always)]
+    #[inline]
     fn signal_release(&mut self, rel_type: ReleaseType) {
         self.pitch_gen.signal_release(rel_type);
         self.grabber.signal_release();
     }
 
-    #[inline(always)]
+    #[inline]
     fn process_controls(&mut self, control: &VoiceControlData) {
         self.pitch_gen.process_controls(control);
     }
@@ -566,7 +562,7 @@ where
     Pitch: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
     Grabber: SIMDSampleGrabber<S>,
 {
-    #[inline(always)]
+    #[inline]
     fn next_sample(&mut self) -> SIMDSampleMono<S> {
         simd_invoke!(S, {
             let speed = self.pitch_gen.next_sample().0;
@@ -682,19 +678,19 @@ where
     Pitch: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
     Grabber: SIMDSampleGrabber<S>,
 {
-    #[inline(always)]
+    #[inline]
     fn ended(&self) -> bool {
         self.grabber_left.is_past_end(self.time) || self.grabber_right.is_past_end(self.time)
     }
 
-    #[inline(always)]
+    #[inline]
     fn signal_release(&mut self, rel_type: ReleaseType) {
         self.pitch_gen.signal_release(rel_type);
         self.grabber_left.signal_release();
         self.grabber_right.signal_release();
     }
 
-    #[inline(always)]
+    #[inline]
     fn process_controls(&mut self, control: &VoiceControlData) {
         self.pitch_gen.process_controls(control);
     }
@@ -707,7 +703,7 @@ where
     Pitch: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
     Grabber: SIMDSampleGrabber<S>,
 {
-    #[inline(always)]
+    #[inline]
     fn next_sample(&mut self) -> SIMDSampleStereo<S> {
         simd_invoke!(S, {
             let speed = self.pitch_gen.next_sample().0;
