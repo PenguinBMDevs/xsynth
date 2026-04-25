@@ -38,17 +38,17 @@ where
     S: Simd,
     V: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
 {
-    #[inline(always)]
+    #[inline]
     fn ended(&self) -> bool {
         self.v.ended()
     }
 
-    #[inline(always)]
+    #[inline]
     fn signal_release(&mut self, rel_type: ReleaseType) {
         self.v.signal_release(rel_type);
     }
 
-    #[inline(always)]
+    #[inline]
     fn process_controls(&mut self, control: &VoiceControlData) {
         self.v.process_controls(control);
     }
@@ -59,11 +59,13 @@ where
     S: Simd,
     V: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
 {
-    #[inline(always)]
+    #[inline]
     fn next_sample(&mut self) -> SIMDSampleMono<S> {
         simd_invoke!(S, {
             let mut next_sample = self.v.next_sample();
-            next_sample.0 = self.cutoff.process_simd::<S>(next_sample.0);
+            for i in 0..S::Vf32::WIDTH {
+                next_sample.0[i] = self.cutoff.process(next_sample.0[i]);
+            }
             next_sample
         })
     }
@@ -100,17 +102,17 @@ where
     S: Simd,
     V: SIMDVoiceGenerator<S, SIMDSampleStereo<S>>,
 {
-    #[inline(always)]
+    #[inline]
     fn ended(&self) -> bool {
         self.v.ended()
     }
 
-    #[inline(always)]
+    #[inline]
     fn signal_release(&mut self, rel_type: ReleaseType) {
         self.v.signal_release(rel_type);
     }
 
-    #[inline(always)]
+    #[inline]
     fn process_controls(&mut self, control: &VoiceControlData) {
         self.v.process_controls(control);
     }
@@ -121,12 +123,14 @@ where
     S: Simd,
     V: SIMDVoiceGenerator<S, SIMDSampleStereo<S>>,
 {
-    #[inline(always)]
+    #[inline]
     fn next_sample(&mut self) -> SIMDSampleStereo<S> {
         simd_invoke!(S, {
             let mut next_sample = self.v.next_sample();
-            next_sample.0 = self.cutoff1.process_simd::<S>(next_sample.0);
-            next_sample.1 = self.cutoff2.process_simd::<S>(next_sample.1);
+            for i in 0..S::Vf32::WIDTH {
+                next_sample.0[i] = self.cutoff1.process(next_sample.0[i]);
+                next_sample.1[i] = self.cutoff2.process(next_sample.1[i]);
+            }
             next_sample
         })
     }
