@@ -138,8 +138,8 @@ impl<T: Simd> SIMDLerperConvex<T> {
 struct StageTime<T: Simd> {
     stage_time_simd: T::Vf32,
     stage_end_time_f32: f32,
-    increment_simd: T::Vf32,      // The SIMD width as a SIMD float
-    stage_end_time_simd: T::Vf32, // The stage end time as a SIMD float
+    increment_simd: T::Vf32,     // The SIMD width as a SIMD float
+    inv_stage_end_time: T::Vf32, // 1.0 / end_time — avoid expensive SIMD div in hot path
 }
 
 impl<T: Simd> StageTime<T> {
@@ -154,7 +154,7 @@ impl<T: Simd> StageTime<T> {
                 stage_time_simd,
                 stage_end_time_f32: stage_end_time as f32,
                 increment_simd: T::Vf32::set1(T::Vf32::WIDTH as f32),
-                stage_end_time_simd: T::Vf32::set1(stage_end_time as f32),
+                inv_stage_end_time: T::Vf32::set1(1.0 / stage_end_time as f32),
             }
         })
     }
@@ -188,7 +188,7 @@ impl<T: Simd> StageTime<T> {
 
     #[inline(always)]
     pub fn progress_simd_array(&self) -> T::Vf32 {
-        simd_invoke!(T, *self.raw_simd_array() / self.stage_end_time_simd)
+        simd_invoke!(T, *self.raw_simd_array() * self.inv_stage_end_time)
     }
 
     #[inline(always)]
@@ -436,6 +436,11 @@ struct VoiceEnvelopeState<T: Simd> {
     stage_data: StageData<T>,
 }
 
+/// Threshold below which a voice in release stage is considered silent
+/// and can be safely terminated. Set to ~-90dB (below 16-bit LSB),
+/// which is inaudible in any reasonable listening scenario.
+const FINISH_THRESHOLD: f32 = 1.0 / 32768.0;
+
 pub struct SIMDVoiceEnvelope<T: Simd> {
     original_params: EnvelopeParameters,
     params: EnvelopeParameters,
@@ -533,6 +538,7 @@ impl<T: Simd> SIMDVoiceEnvelope<T> {
                     StageData::Constant(constant) => *constant,
                 };
                 self.increment_time_by(T::Vf32::WIDTH as u32);
+                self.try_finish_silent(&values);
                 SIMDSampleMono(values)
             } else {
                 let mut values = T::Vf32::set1(0.0);
@@ -610,6 +616,24 @@ impl<T: Simd> SIMDVoiceEnvelope<T> {
         params
     }
 
+    /// Check if all SIMD lanes of the computed envelope values are below
+    /// the silence threshold during the release stage. If so, force the
+    /// voice to Finished immediately — it's producing inaudible output
+    /// (below ~-90dB) and continuing would waste CPU cycles.
+    #[inline(always)]
+    fn try_finish_silent(&mut self, values: &T::Vf32) {
+        if self.state.current_stage != EnvelopeStage::Release {
+            return;
+        }
+        for i in 0..T::Vf32::WIDTH {
+            if values[i].abs() >= FINISH_THRESHOLD {
+                return;
+            }
+        }
+        // All lanes below threshold — safe to terminate
+        self.state = self.params.get_stage_data(EnvelopeStage::Finished, 0.0);
+    }
+
     pub fn modify_envelope(&mut self, envelope: EnvelopeControlData) {
         if !self.killed {
             self.params =
@@ -665,6 +689,7 @@ impl<T: Simd> SIMDVoiceGenerator<T, SIMDSampleMono<T>> for SIMDVoiceEnvelope<T> 
                         } else {
                             let values = lerper.lerp_simd(stage_time.progress_simd_array());
                             stage_time.increment();
+                            self.try_finish_silent(&values);
                             return SIMDSampleMono(values);
                         }
                     }
@@ -679,6 +704,7 @@ impl<T: Simd> SIMDVoiceGenerator<T, SIMDSampleMono<T>> for SIMDVoiceEnvelope<T> 
                         } else {
                             let values = lerper.lerp_simd(stage_time.progress_simd_array());
                             stage_time.increment();
+                            self.try_finish_silent(&values);
                             return SIMDSampleMono(values);
                         }
                     }
@@ -693,6 +719,7 @@ impl<T: Simd> SIMDVoiceGenerator<T, SIMDSampleMono<T>> for SIMDVoiceEnvelope<T> 
                         } else {
                             let values = lerper.lerp_simd(stage_time.progress_simd_array());
                             stage_time.increment();
+                            self.try_finish_silent(&values);
                             return SIMDSampleMono(values);
                         }
                     }
@@ -713,6 +740,20 @@ mod tests {
     fn assert_vf32_equal<S: Simd>(a: S::Vf32, b: S::Vf32) {
         for i in 0..S::Vf32::WIDTH {
             assert_eq!(a[i], b[i]);
+        }
+    }
+
+    fn assert_vf32_close<S: Simd>(a: S::Vf32, b: S::Vf32, epsilon: f32) {
+        for i in 0..S::Vf32::WIDTH {
+            assert!(
+                (a[i] - b[i]).abs() < epsilon,
+                "a[{}] = {}, b[{}] = {}, diff = {}",
+                i,
+                a[i],
+                i,
+                b[i],
+                (a[i] - b[i]).abs()
+            );
         }
     }
 
@@ -755,15 +796,17 @@ mod tests {
                 assert_eq!(time.simd_array_start(), 5);
                 assert!(!time.is_ending());
 
-                let end_simd = S::Vf32::set1(20.0);
-
                 assert_vf32_equal::<S>(
                     *time.raw_simd_array(),
                     simd_from_range::<S>(5..(5 + S::Vf32::WIDTH)),
                 );
-                assert_vf32_equal::<S>(
+                // progress_simd_array uses multiply-by-reciprocal (not division),
+                // so results may differ at ULP level from a/b
+                let inv_end = S::Vf32::set1(1.0 / 20.0);
+                assert_vf32_close::<S>(
                     time.progress_simd_array(),
-                    simd_from_range::<S>(5..(5 + S::Vf32::WIDTH)) / end_simd,
+                    simd_from_range::<S>(5..(5 + S::Vf32::WIDTH)) * inv_end,
+                    1e-6,
                 );
 
                 let mut i = 5;
@@ -772,9 +815,10 @@ mod tests {
                         *time.raw_simd_array(),
                         simd_from_range::<S>(i..(i + S::Vf32::WIDTH)),
                     );
-                    assert_vf32_equal::<S>(
+                    assert_vf32_close::<S>(
                         time.progress_simd_array(),
-                        simd_from_range::<S>(5..(5 + S::Vf32::WIDTH)) / end_simd,
+                        simd_from_range::<S>(5..(5 + S::Vf32::WIDTH)) * inv_end,
+                        1e-6,
                     );
                     assert_eq!(time.simd_array_start(), i as u32);
                     assert!(!time.is_ending());

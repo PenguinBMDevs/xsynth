@@ -11,6 +11,7 @@ use std::{
 
 use crossbeam_channel::{unbounded, Receiver};
 
+use crate::helpers::fast_zero_fill;
 use crate::AudioStreamParams;
 
 use super::AudioPipe;
@@ -154,8 +155,9 @@ impl BufferedRenderer {
                         .try_recv()
                         .unwrap_or_else(|_| Vec::with_capacity(required_len));
 
-                    vec.resize(required_len, 0.0f32);
-                    vec.fill(0.0f32);
+                    // fast_zero_fill handles both capacity extension and zeroing
+                    // in a single memset operation — faster than resize+fill
+                    fast_zero_fill(&mut vec, required_len);
                     render.read_samples(&mut vec);
 
                     // Send the samples, break if the pipe is broken
@@ -229,8 +231,12 @@ impl BufferedRenderer {
         }
 
         // Read from output queue, leave the remainder if there is any
-        // Use a timeout to prevent infinite blocking and reduce latency
-        let timeout = std::time::Duration::from_millis(100);
+        // Use a short timeout to prevent audio callback blocking.
+        // In normal operation the render thread stays ahead so recv succeeds
+        // immediately (no blocking). 5ms = ~half a render cycle at 480 samples.
+        // If exceeded, fill with silence — audible dropout is ~50ms max rather
+        // than hanging the audio callback for 100ms+.
+        let timeout = std::time::Duration::from_millis(5);
         while i < dest.len() {
             match self.receive.recv_timeout(timeout) {
                 Ok(mut buf) => {

@@ -271,8 +271,19 @@ impl VoiceChannel {
         }
     }
 
+    /// Propagate layer count to all keys' VoiceBuffers.
+    /// This is called at the start of each render frame to ensure
+    /// SetLayerCount events take effect (they only modify params.layers).
+    fn sync_layer_count(&mut self) {
+        let layers = self.params.layers;
+        for key in &mut self.key_voices {
+            key.data.set_max_voices(layers);
+        }
+    }
+
     fn push_key_events_and_render(&mut self, out: &mut [f32]) {
         self.params.load_program();
+        self.sync_layer_count();
 
         // Fast zero using write_bytes (optimized by compiler to SIMD)
         unsafe {
@@ -303,13 +314,26 @@ impl VoiceChannel {
                 }
             }
             None => {
-                for key in self.key_voices.iter_mut() {
+                // Use per-key audio caches + parallel rendering via the global
+                // rayon thread pool. This gives multi-core speedup even when no
+                // custom threadpool was passed.
+                let len = out.len();
+                let control_data = &self.voice_control_data;
+                let params = &self.params;
+                self.key_voices.par_iter_mut().for_each(|key| {
                     for e in key.event_cache.drain(..) {
-                        key.data
-                            .send_event(e, &self.voice_control_data, &self.params.channel_sf);
+                        key.data.send_event(e, control_data, &params.channel_sf);
                     }
 
-                    key.data.render_to(out);
+                    fast_zero_fill(&mut key.audio_cache, len);
+                    key.data.render_to(&mut key.audio_cache);
+                });
+
+                // Sum per-key buffers to output (sequential)
+                for key in self.key_voices.iter() {
+                    if key.data.has_voices() {
+                        sum_simd(&key.audio_cache, out);
+                    }
                 }
             }
         }
@@ -395,14 +419,13 @@ impl VoiceChannel {
                                 let val = (val as f32 - 8192.0) / 8192.0 * 100.0;
                                 self.process_control_event(ControlEvent::FineTune(val));
                             }
-                            2 => {
+                            2
                                 // Coarse tune
-                                if controller == 0x06 {
+                                if controller == 0x06 => {
                                     self.process_control_event(ControlEvent::CoarseTune(
                                         value as f32 - 64.0,
                                     ))
                                 }
-                            }
                             _ => {}
                         }
                     }
@@ -470,24 +493,21 @@ impl VoiceChannel {
                         self.control_event_data.cutoff = None;
                     }
                 }
-                0x78 => {
+                0x78
                     // All Sounds Off
-                    if value == 0 {
+                    if value == 0 => {
                         self.process_event(ChannelEvent::Audio(ChannelAudioEvent::AllNotesKilled));
                     }
-                }
-                0x79 => {
+                0x79
                     // Reset All Controllers
-                    if value == 0 {
+                    if value == 0 => {
                         self.reset_control();
                     }
-                }
-                0x7B => {
+                0x7B
                     // All Notes Off
-                    if value == 0 {
+                    if value == 0 => {
                         self.process_event(ChannelEvent::Audio(ChannelAudioEvent::AllNotesOff));
                     }
-                }
                 _ => {}
             },
             ControlEvent::PitchBendSensitivity(sensitivity) => {

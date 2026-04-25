@@ -187,6 +187,9 @@ impl VoiceBuffer {
 
     /// Batch remove ended voices using swap_remove for efficiency
     /// swap_remove is O(1) per removal but changes order
+    /// Note: New code should prefer render_and_compact() which combines
+    /// removal + rendering in a single cache-friendly pass.
+    #[allow(dead_code)]
     #[inline(always)]
     pub fn remove_ended_voices(&mut self) {
         // Use swap_remove for O(1) per-element removal
@@ -214,6 +217,7 @@ impl VoiceBuffer {
     }
 
     /// Get mutable access to voices for parallel processing
+    #[allow(dead_code)]
     #[inline(always)]
     pub fn get_voices_mut(&mut self) -> &mut [GroupVoice] {
         &mut self.voices
@@ -242,7 +246,6 @@ impl VoiceBuffer {
     }
 
     /// Set the maximum number of voices per key. None means no limit.
-    #[allow(dead_code)]
     pub fn set_max_voices(&mut self, max: Option<usize>) {
         self.max_voices = max;
     }
