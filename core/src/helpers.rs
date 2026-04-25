@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::cell::RefCell;
+use std::sync::Arc;
 
 mod frequencies;
 pub use frequencies::*;
@@ -47,7 +47,9 @@ pub fn get_render_buffer(size: usize) -> Vec<f32> {
             if buf.capacity() < size {
                 buf.reserve(size - buf.capacity());
             }
-            unsafe { buf.set_len(size); }
+            unsafe {
+                buf.set_len(size);
+            }
             buf.fill(0.0);
             buf
         } else {

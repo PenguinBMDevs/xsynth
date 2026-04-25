@@ -153,7 +153,7 @@ impl BufferedRenderer {
                     let mut vec = return_rx
                         .try_recv()
                         .unwrap_or_else(|_| Vec::with_capacity(required_len));
-                    
+
                     vec.resize(required_len, 0.0f32);
                     vec.fill(0.0f32);
                     render.read_samples(&mut vec);

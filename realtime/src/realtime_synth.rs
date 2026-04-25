@@ -1,8 +1,6 @@
-use std::{
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    }
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
 };
 
 use cpal::{
@@ -16,7 +14,7 @@ use xsynth_core::{
     channel::{ChannelConfigEvent, ChannelEvent, VoiceChannel},
     channel_group::SynthFormat,
     effects::VolumeLimiter,
-    helpers::sum_simd,
+    helpers::{fast_zero_fill, sum_simd},
     AudioPipe, AudioStreamParams, FunctionAudioPipe,
 };
 
@@ -166,7 +164,7 @@ impl RealtimeSynth {
 
             let (event_sender, event_receiver) = unbounded();
             senders.push(event_sender);
-            
+
             channels.push(channel);
             event_receivers.push(event_receiver);
         }

@@ -23,7 +23,7 @@ impl SingleChannelLimiter {
 
     fn limit(&mut self, val: f32) -> f32 {
         let abs = val.abs();
-        
+
         // Smooth envelope follower with different attack/release times
         if self.loudness > abs {
             // Release phase: slower decay
@@ -39,10 +39,10 @@ impl SingleChannelLimiter {
         // Calculate gain reduction: when loudness is high, reduce more
         // The formula now uses a softer knee to prevent hard limiting artifacts
         let gain_reduction = 1.0 / (1.0 + (effective_loudness - 1.0).max(0.0) * self.strength);
-        
+
         // Apply limiting with soft clipping for values near the threshold
         let limited = val * gain_reduction;
-        
+
         // Soft clipping to prevent any hard digital clipping
         // Using tanh-like soft clipping for smooth transition
         let soft_clipped = if limited.abs() > self.max_output {

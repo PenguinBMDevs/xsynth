@@ -140,8 +140,7 @@ impl Sf2ParsedPreset {
             // Build index for O(1) stereo pair lookup
             use std::collections::HashMap;
             #[allow(clippy::type_complexity)]
-            let mut stereo_pairs: HashMap<(i8, i16, u8, u8, u8, u8), Vec<usize>> =
-                HashMap::new();
+            let mut stereo_pairs: HashMap<(i8, i16, u8, u8, u8, u8), Vec<usize>> = HashMap::new();
             for (i, (region, sample)) in regions.iter().enumerate() {
                 if sample.link_type.abs() == 1 && region.pan.abs() == 500 {
                     stereo_pairs
@@ -175,29 +174,24 @@ impl Sf2ParsedPreset {
                             *region.velrange.start(),
                         ));
 
-                        let found = match_indices
-                            .and_then(|indices| {
-                                indices
-                                    .iter()
-                                    .find(|&&idx| idx > i && !ignored_idx.contains(&idx))
-                                    .copied()
-                            });
+                        let found = match_indices.and_then(|indices| {
+                            indices
+                                .iter()
+                                .find(|&&idx| idx > i && !ignored_idx.contains(&idx))
+                                .copied()
+                        });
 
                         if let Some(reg) = found {
                             let sample_match = &regions[reg].1;
                             let mut new_region = region.clone();
                             match sample.link_type {
                                 -1 => {
-                                    new_region.sample = Arc::new([
-                                        sample.data.clone(),
-                                        sample_match.data.clone(),
-                                    ])
+                                    new_region.sample =
+                                        Arc::new([sample.data.clone(), sample_match.data.clone()])
                                 }
                                 1 => {
-                                    new_region.sample = Arc::new([
-                                        sample_match.data.clone(),
-                                        sample.data.clone(),
-                                    ])
+                                    new_region.sample =
+                                        Arc::new([sample_match.data.clone(), sample.data.clone()])
                                 }
                                 _ => {}
                             }

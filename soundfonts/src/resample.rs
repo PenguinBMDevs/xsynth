@@ -1,4 +1,8 @@
-#![allow(clippy::uninit_vec, clippy::excessive_precision, clippy::needless_range_loop)]
+#![allow(
+    clippy::uninit_vec,
+    clippy::excessive_precision,
+    clippy::needless_range_loop
+)]
 use std::sync::Arc;
 
 /// Fast linear interpolation resampler.
@@ -10,8 +14,11 @@ pub fn resample_fast(input: &[f32], from_rate: f32, to_rate: f32) -> Arc<[f32]> 
 
     let ratio = (from_rate / to_rate) as f64;
     let output_len = ((input.len() - 1) as f64 / ratio) as usize + 1;
-    #[allow(clippy::uninit_vec)] let mut output: Vec<f32> = Vec::with_capacity(output_len);
-    unsafe { output.set_len(output_len); }
+    #[allow(clippy::uninit_vec)]
+    let mut output: Vec<f32> = Vec::with_capacity(output_len);
+    unsafe {
+        output.set_len(output_len);
+    }
     let input_len = input.len();
     let mut src_pos = 0.0f64;
 
@@ -21,7 +28,11 @@ pub fn resample_fast(input: &[f32], from_rate: f32, to_rate: f32) -> Arc<[f32]> 
         output[i] = unsafe {
             let si = src_idx.min(input_len - 1);
             let s0 = *input.get_unchecked(si);
-            let s1 = if si + 1 < input_len { *input.get_unchecked(si + 1) } else { s0 };
+            let s1 = if si + 1 < input_len {
+                *input.get_unchecked(si + 1)
+            } else {
+                s0
+            };
             s0 + (s1 - s0) * frac
         };
         src_pos += ratio;
@@ -35,14 +46,20 @@ pub fn resample_fast(input: &[f32], from_rate: f32, to_rate: f32) -> Arc<[f32]> 
 #[inline(never)]
 pub fn resample_i16(input: &[i16], from_rate: f32, to_rate: f32) -> Arc<[f32]> {
     if from_rate == to_rate || input.is_empty() {
-        let output: Vec<f32> = input.iter().map(|&s| s as f32 * 3.051850947599719e-5).collect();
+        let output: Vec<f32> = input
+            .iter()
+            .map(|&s| s as f32 * 3.051850947599719e-5)
+            .collect();
         return output.into();
     }
 
     let ratio = (from_rate / to_rate) as f64;
     let output_len = ((input.len() - 1) as f64 / ratio) as usize + 1;
-    #[allow(clippy::uninit_vec)] let mut output: Vec<f32> = Vec::with_capacity(output_len);
-    unsafe { output.set_len(output_len); }
+    #[allow(clippy::uninit_vec)]
+    let mut output: Vec<f32> = Vec::with_capacity(output_len);
+    unsafe {
+        output.set_len(output_len);
+    }
     let input_len = input.len();
     let mut src_pos = 0.0f64;
 
