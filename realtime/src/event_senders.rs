@@ -1,8 +1,8 @@
 use std::{
     collections::VecDeque,
     ops::RangeInclusive,
-    sync::{Arc, RwLock},
-    thread::{self, JoinHandle},
+    sync::atomic::{AtomicU64, Ordering},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -10,74 +10,46 @@ use crossbeam_channel::Sender;
 
 use xsynth_core::channel::{ChannelAudioEvent, ChannelConfigEvent, ChannelEvent, ControlEvent};
 
-use crate::{util::ReadWriteAtomicU64, SynthEvent};
+use crate::SynthEvent;
 
 static NPS_WINDOW_MILLISECONDS: u64 = 20;
 
 struct NpsWindow {
-    time: u64,
+    time: Instant,
     notes: u64,
 }
 
 /// A struct for tracking the estimated NPS, as fast as possible with the focus on speed
 /// rather than precision. Used for NPS limiting on extremely spammy midis.
+///
+/// Uses on-demand `Instant::now()` instead of a dedicated thread, eliminating the
+/// per-sender OS thread overhead that previously resulted in ~16 idle threads for MIDI.
 struct RoughNpsTracker {
-    rough_time: Arc<ReadWriteAtomicU64>,
-    last_time: u64,
     windows: VecDeque<NpsWindow>,
     total_window_sum: u64,
     current_window_sum: u64,
-    stop: Arc<RwLock<bool>>,
-    join_handle: Option<JoinHandle<()>>,
+    last_window_time: Instant,
 }
 
 impl RoughNpsTracker {
     pub fn new() -> RoughNpsTracker {
-        let rough_time = Arc::new(ReadWriteAtomicU64::new(0));
-        let stop = Arc::new(RwLock::new(false));
-
-        let join_handle = {
-            let rough_time = rough_time.clone();
-            let stop = stop.clone();
-            thread::Builder::new()
-                .name("xsynth_nps_tracker".to_string())
-                .spawn(move || {
-                    let mut last_time = 0;
-                    let mut now = Instant::now();
-                    while !*stop.read().unwrap() {
-                        thread::sleep(Duration::from_millis(NPS_WINDOW_MILLISECONDS));
-                        let diff = now.elapsed();
-                        last_time += diff.as_millis() as u64;
-                        rough_time.write(last_time);
-                        now = Instant::now();
-                    }
-                })
-                .unwrap()
-        };
-
         RoughNpsTracker {
-            rough_time,
-            last_time: 0,
             windows: VecDeque::new(),
             total_window_sum: 0,
             current_window_sum: 0,
-            stop,
-            join_handle: Some(join_handle),
+            last_window_time: Instant::now(),
         }
     }
 
     pub fn calculate_nps(&mut self) -> u64 {
         self.check_time();
 
-        loop {
-            let cutoff = self.last_time.saturating_sub(1000);
-            if let Some(window) = self.windows.front() {
-                if window.time < cutoff {
-                    self.total_window_sum -= window.notes;
-                    self.windows.pop_front();
-                } else {
-                    break;
-                }
+        // Remove windows older than 1 second
+        while let Some(window) = self.windows.front() {
+            // Safe: last_window_time is always >= window.time (windows are pushed in time order)
+            if self.last_window_time >= window.time + Duration::from_millis(1000) {
+                self.total_window_sum -= window.notes;
+                self.windows.pop_front();
             } else {
                 break;
             }
@@ -90,27 +62,20 @@ impl RoughNpsTracker {
     }
 
     fn check_time(&mut self) {
-        let time = self.rough_time.read();
-        if time > self.last_time {
+        let now = Instant::now();
+        if now >= self.last_window_time + Duration::from_millis(NPS_WINDOW_MILLISECONDS) {
             self.windows.push_back(NpsWindow {
-                time: self.last_time,
+                time: self.last_window_time,
                 notes: self.current_window_sum,
             });
             self.current_window_sum = 0;
-            self.last_time = time;
+            self.last_window_time = now;
         }
     }
 
     pub fn add_note(&mut self) {
         self.current_window_sum += 1;
         self.total_window_sum += 1;
-    }
-}
-
-impl Drop for RoughNpsTracker {
-    fn drop(&mut self) {
-        *self.stop.write().unwrap() = true;
-        self.join_handle.take().unwrap().join().unwrap();
     }
 }
 
@@ -121,14 +86,14 @@ fn should_send_for_vel_and_nps(vel: u8, nps: u64, max: u64) -> bool {
 struct EventSender {
     sender: Sender<ChannelEvent>,
     nps: RoughNpsTracker,
-    max_nps: Arc<ReadWriteAtomicU64>,
+    max_nps: Arc<AtomicU64>,
     skipped_notes: [u64; 128],
     ignore_range: RangeInclusive<u8>,
 }
 
 impl EventSender {
     pub fn new(
-        max_nps: Arc<ReadWriteAtomicU64>,
+        max_nps: Arc<AtomicU64>,
         sender: Sender<ChannelEvent>,
         ignore_range: RangeInclusive<u8>,
     ) -> Self {
@@ -150,7 +115,7 @@ impl EventSender {
 
                 let nps = self.nps.calculate_nps();
 
-                if should_send_for_vel_and_nps(*vel, nps, self.max_nps.read())
+                if should_send_for_vel_and_nps(*vel, nps, self.max_nps.load(Ordering::Relaxed))
                     && !self.ignore_range.contains(vel)
                 {
                     self.sender.send(ChannelEvent::Audio(event)).ok();
@@ -212,7 +177,7 @@ pub struct RealtimeEventSender {
 impl RealtimeEventSender {
     pub(super) fn new(
         senders: Vec<Sender<ChannelEvent>>,
-        max_nps: Arc<ReadWriteAtomicU64>,
+        max_nps: Arc<AtomicU64>,
         ignore_range: RangeInclusive<u8>,
     ) -> RealtimeEventSender {
         RealtimeEventSender {

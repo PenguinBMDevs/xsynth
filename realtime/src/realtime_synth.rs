@@ -17,13 +17,11 @@ use xsynth_core::{
     channel::{ChannelConfigEvent, ChannelEvent, VoiceChannel},
     channel_group::SynthFormat,
     effects::VolumeLimiter,
-    helpers::{fast_zero_fill, sum_simd},
+    helpers::sum_simd,
     AudioPipe, AudioStreamParams, FunctionAudioPipe,
 };
 
-use crate::{
-    util::ReadWriteAtomicU64, RealtimeEventSender, SynthEvent, ThreadCount, XSynthRealtimeConfig,
-};
+use crate::{RealtimeEventSender, SynthEvent, ThreadCount, XSynthRealtimeConfig};
 
 /// Holds the statistics for an instance of RealtimeSynth.
 #[derive(Debug, Clone)]
@@ -77,6 +75,9 @@ unsafe impl Send for SendSyncStream {}
 
 struct RealtimeSynthThreadSharedData {
     buffered_renderer: Arc<std::sync::Mutex<BufferedRenderer>>,
+    /// Pre-cloned stats reader to avoid locking the Mutex in the audio callback path.
+    /// All fields behind BufferedRendererStats are Arc<Atomic*> — cloning is cheap.
+    buffered_stats: BufferedRendererStatsReader,
     stream: SendSyncStream,
     event_senders: RealtimeEventSender,
 }
@@ -212,7 +213,9 @@ impl RealtimeSynth {
         let render = FunctionAudioPipe::new(stream_params, move |out| {
             for sender in command_senders.iter() {
                 let mut buf = vec_cache.pop_front().unwrap();
-                fast_zero_fill(&mut buf, out.len());
+                // Ensure buffer is the right length — channel handler's read_samples
+                // overwrites ALL samples anyway, so no need for zero-fill
+                buf.resize(out.len(), 0.0);
 
                 sender.send(buf).unwrap();
             }
@@ -227,11 +230,16 @@ impl RealtimeSynth {
             total_voice_count.store(total_voices, Ordering::Relaxed);
         });
 
-        let buffered = Arc::new(std::sync::Mutex::new(BufferedRenderer::new(
+        let buffered_renderer = BufferedRenderer::new(
             render,
             stream_params,
             calculate_render_size(sample_rate, config.render_window_ms),
-        )));
+        );
+        // Pre-clone stats reader before wrapping in Mutex.
+        // This allows get_stats() to read stats without locking, avoiding
+        // priority inversion in the audio callback path.
+        let buffered_stats = buffered_renderer.get_buffer_stats();
+        let buffered = Arc::new(std::sync::Mutex::new(buffered_renderer));
 
         fn build_stream<T: SizedSample + ConvertSample>(
             device: &Device,
@@ -268,12 +276,12 @@ impl RealtimeSynth {
 
         stream.play().unwrap();
 
-        let max_nps = Arc::new(ReadWriteAtomicU64::new(10000));
+        let max_nps = Arc::new(AtomicU64::new(10000));
 
         Self {
             data: Some(RealtimeSynthThreadSharedData {
                 buffered_renderer: buffered,
-
+                buffered_stats,
                 event_senders: RealtimeEventSender::new(senders, max_nps, config.ignore_range),
                 stream: SendSyncStream(stream),
             }),
@@ -325,9 +333,10 @@ impl RealtimeSynth {
     /// on how to use.
     pub fn get_stats(&self) -> RealtimeSynthStatsReader {
         let data = self.data.as_ref().unwrap();
-        let buffered_stats = data.buffered_renderer.lock().unwrap().get_buffer_stats();
-
-        RealtimeSynthStatsReader::new(self.stats.clone(), buffered_stats)
+        // Uses pre-cloned stats reader — no Mutex lock needed.
+        // This avoids priority inversion where the audio callback (which holds
+        // the BufferedRenderer lock via read()) would be blocked.
+        RealtimeSynthStatsReader::new(self.stats.clone(), data.buffered_stats.clone())
     }
 
     /// Returns the stream parameters of the audio output device.

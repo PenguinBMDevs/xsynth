@@ -2,7 +2,7 @@
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{AtomicI64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
         Arc, RwLock,
     },
     thread::{self, JoinHandle},
@@ -26,6 +26,7 @@ struct BufferedRendererStats {
 }
 
 /// Reads the statistics of an instance of BufferedRenderer in a usable way.
+#[derive(Clone)]
 pub struct BufferedRendererStatsReader {
     stats: BufferedRendererStats,
 }
@@ -82,7 +83,7 @@ pub struct BufferedRenderer {
     /// Remainder of samples from the last received samples vec.
     remainder: Vec<f32>,
     /// Whether the render thread should be killed.
-    killed: Arc<RwLock<bool>>,
+    killed: Arc<AtomicBool>,
     /// The thread handle to wait for at the end.
     thread_handle: Option<JoinHandle<()>>,
     stream_params: AudioStreamParams,
@@ -107,7 +108,7 @@ impl BufferedRenderer {
         let render_size = Arc::new(AtomicUsize::new(render_size));
         let last_samples_after_read = Arc::new(AtomicI64::new(0));
         let render_time = Arc::new(RwLock::new(VecDeque::new()));
-        let killed = Arc::new(RwLock::new(false));
+        let killed = Arc::new(AtomicBool::new(false));
 
         let thread_handle = {
             let samples = samples.clone();
@@ -115,7 +116,7 @@ impl BufferedRenderer {
             let render_size = render_size.clone();
             let render_time = render_time.clone();
             let killed = killed.clone();
-            
+
             thread::Builder::new()
                 .name("xsynth_buffered_rendering".to_string())
                 .spawn(move || loop {
@@ -136,7 +137,7 @@ impl BufferedRenderer {
                             break;
                         }
 
-                        if *killed.read().unwrap() {
+                        if killed.load(Ordering::Relaxed) {
                             return;
                         }
                     }
@@ -145,8 +146,7 @@ impl BufferedRenderer {
                     let end = start + delay;
 
                     // Create the vec and write the samples
-                    let mut vec =
-                        vec![0.0f32; size * stream_params.channels.count() as usize];
+                    let mut vec = vec![0.0f32; size * stream_params.channels.count() as usize];
                     render.read_samples(&mut vec);
 
                     // Send the samples, break if the pipe is broken
@@ -258,7 +258,7 @@ impl BufferedRenderer {
 
 impl Drop for BufferedRenderer {
     fn drop(&mut self) {
-        *self.killed.write().unwrap() = true;
+        self.killed.store(true, Ordering::Relaxed);
         self.thread_handle.take().unwrap().join().unwrap();
     }
 }
