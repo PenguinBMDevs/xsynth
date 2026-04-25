@@ -1,5 +1,6 @@
 use crate::channel::ValueLerp;
 use biquad::*;
+use simdeez::prelude::*;
 pub use xsynth_soundfonts::FilterType;
 
 #[derive(Clone)]
@@ -56,6 +57,15 @@ impl BiQuadFilter {
 
     pub fn process(&mut self, input: f32) -> f32 {
         self.filter.run(input)
+    }
+
+    #[inline(always)]
+    pub fn process_simd<S: Simd>(&mut self, input: S::Vf32) -> S::Vf32 {
+        let mut out = input;
+        for i in 0..S::Vf32::WIDTH {
+            out[i] = self.process(input[i]);
+        }
+        out
     }
 }
 

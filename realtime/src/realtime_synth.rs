@@ -1,13 +1,17 @@
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
+use std::{
+    collections::VecDeque,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    thread::{self},
 };
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Device, PauseStreamError, PlayStreamError, SizedSample, Stream, SupportedStreamConfig,
 };
-use crossbeam_channel::unbounded;
+use crossbeam_channel::{bounded, unbounded};
 
 use xsynth_core::{
     buffered_renderer::{BufferedRenderer, BufferedRendererStatsReader},
@@ -82,6 +86,7 @@ struct RealtimeSynthThreadSharedData {
 /// A realtime MIDI synthesizer using an audio device for output.
 pub struct RealtimeSynth {
     data: Option<RealtimeSynthThreadSharedData>,
+    join_handles: Vec<thread::JoinHandle<()>>,
 
     stats: RealtimeSynthStats,
 
@@ -133,6 +138,7 @@ impl RealtimeSynth {
     ) -> Self {
         let mut channel_stats = Vec::new();
         let mut senders = Vec::new();
+        let mut command_senders = Vec::new();
 
         let sample_rate = stream_config.sample_rate().0;
         let stream_params = AudioStreamParams::new(sample_rate, stream_config.channels().into());
@@ -153,11 +159,12 @@ impl RealtimeSynth {
             SynthFormat::Custom { channels } => channels,
         };
 
-        let mut channels = Vec::new();
-        let mut event_receivers = Vec::new();
+        let (output_sender, output_receiver) = bounded::<Vec<f32>>(channel_count as usize);
+
+        let mut thread_handles = vec![];
 
         for _ in 0u32..channel_count {
-            let channel =
+            let mut channel =
                 VoiceChannel::new(config.channel_init_options, stream_params, pool.clone());
             let stats = channel.get_channel_stats();
             channel_stats.push(stats);
@@ -165,8 +172,25 @@ impl RealtimeSynth {
             let (event_sender, event_receiver) = unbounded();
             senders.push(event_sender);
 
-            channels.push(channel);
-            event_receivers.push(event_receiver);
+            let (command_sender, command_receiver) = bounded::<Vec<f32>>(1);
+            command_senders.push(command_sender);
+
+            let output_sender = output_sender.clone();
+            let join_handle = thread::Builder::new()
+                .name("xsynth_channel_handler".to_string())
+                .spawn(move || loop {
+                    channel.push_events_iter(event_receiver.try_iter());
+                    let mut vec = match command_receiver.recv() {
+                        Ok(vec) => vec,
+                        Err(_) => break,
+                    };
+                    channel.push_events_iter(event_receiver.try_iter());
+                    channel.read_samples(&mut vec);
+                    output_sender.send(vec).unwrap();
+                })
+                .unwrap();
+
+            thread_handles.push(join_handle);
         }
 
         if config.format == SynthFormat::Midi {
@@ -177,9 +201,9 @@ impl RealtimeSynth {
                 .unwrap();
         }
 
-        let mut vec_cache: Vec<Vec<f32>> = Vec::new();
+        let mut vec_cache: VecDeque<Vec<f32>> = VecDeque::new();
         for _ in 0..channel_count {
-            vec_cache.push(Vec::new());
+            vec_cache.push_front(Vec::new());
         }
 
         let stats = RealtimeSynthStats::new();
@@ -187,33 +211,18 @@ impl RealtimeSynth {
         let total_voice_count = stats.voice_count.clone();
 
         let render = FunctionAudioPipe::new(stream_params, move |out| {
-            if let Some(pool) = &pool {
-                use rayon::prelude::*;
-                pool.install(|| {
-                    channels
-                        .par_iter_mut()
-                        .zip(event_receivers.par_iter())
-                        .zip(vec_cache.par_iter_mut())
-                        .for_each(|((channel, event_receiver), buf)| {
-                            channel.push_events_iter(event_receiver.try_iter());
-                            fast_zero_fill(buf, out.len());
-                            channel.read_samples(buf);
-                        });
-                });
-            } else {
-                for ((channel, event_receiver), buf) in channels
-                    .iter_mut()
-                    .zip(event_receivers.iter())
-                    .zip(vec_cache.iter_mut())
-                {
-                    channel.push_events_iter(event_receiver.try_iter());
-                    fast_zero_fill(buf, out.len());
-                    channel.read_samples(buf);
-                }
+            // Dispatch phase: send pre-zeroed buffers to each channel thread
+            for sender in command_senders.iter() {
+                let mut buf = vec_cache.pop_front().unwrap();
+                fast_zero_fill(&mut buf, out.len());
+                sender.send(buf).unwrap();
             }
 
-            for buf in vec_cache.iter() {
-                sum_simd(buf, out);
+            // Collect phase: receive rendered buffers and sum into output
+            for _ in 0..channel_count {
+                let buf = output_receiver.recv().unwrap();
+                sum_simd(&buf, out);
+                vec_cache.push_front(buf);
             }
 
             let total_voices = channel_stats.iter().map(|c| c.voice_count()).sum();
@@ -275,7 +284,7 @@ impl RealtimeSynth {
                 event_senders: RealtimeEventSender::new(senders, max_nps, config.ignore_range),
                 stream: SendSyncStream(stream),
             }),
-
+            join_handles: thread_handles,
             stats,
             stream_params,
         }
@@ -358,6 +367,9 @@ impl Drop for RealtimeSynth {
     fn drop(&mut self) {
         let data = self.data.take().unwrap();
         drop(data);
+        for handle in self.join_handles.drain(..) {
+            handle.join().unwrap();
+        }
     }
 }
 

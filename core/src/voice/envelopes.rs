@@ -159,56 +159,56 @@ impl<T: Simd> StageTime<T> {
         })
     }
 
-    #[inline]
+    #[inline(always)]
     fn increment(&mut self) {
         simd_invoke!(T, self.stage_time_simd += self.increment_simd);
     }
 
-    #[inline]
+    #[inline(always)]
     fn increment_by(&mut self, by: u32) {
         simd_invoke!(T, self.stage_time_simd += T::Vf32::set1(by as f32));
     }
 
-    #[inline]
+    #[inline(always)]
     /// Is the upper most value in the SIMD array past the end?
     pub fn is_ending(&self) -> bool {
         self.simd_array_end_f32() >= self.stage_end_time_f32
     }
 
-    #[inline]
+    #[inline(always)]
     /// Is the SIMD array intersecting the end? Or has it completely passed the end
     pub fn is_intersecting_end(&self) -> bool {
         self.is_ending() && self.simd_array_start_f32() < self.stage_end_time_f32
     }
 
-    #[inline]
+    #[inline(always)]
     fn raw_simd_array(&self) -> &T::Vf32 {
         &self.stage_time_simd
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn progress_simd_array(&self) -> T::Vf32 {
         simd_invoke!(T, *self.raw_simd_array() / self.stage_end_time_simd)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn simd_array_start_f32(&self) -> f32 {
         self.stage_time_simd[0]
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn simd_array_end_f32(&self) -> f32 {
         self.stage_time_simd[T::Vf32::WIDTH - 1]
     }
 
     #[allow(unused)]
-    #[inline]
+    #[inline(always)]
     pub fn simd_array_start(&self) -> u32 {
         self.simd_array_start_f32() as u32
     }
 
     #[allow(unused)]
-    #[inline]
+    #[inline(always)]
     pub fn simd_array_end(&self) -> u32 {
         self.simd_array_end_f32() as u32
     }
@@ -620,12 +620,12 @@ impl<T: Simd> SIMDVoiceEnvelope<T> {
 }
 
 impl<T: Simd> VoiceGeneratorBase for SIMDVoiceEnvelope<T> {
-    #[inline]
+    #[inline(always)]
     fn ended(&self) -> bool {
         self.state.current_stage == EnvelopeStage::Finished
     }
 
-    #[inline]
+    #[inline(always)]
     fn signal_release(&mut self, rel_type: ReleaseType) {
         if rel_type == ReleaseType::Kill {
             self.params.modify_stage_data(
@@ -641,14 +641,14 @@ impl<T: Simd> VoiceGeneratorBase for SIMDVoiceEnvelope<T> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn process_controls(&mut self, control: &VoiceControlData) {
         self.modify_envelope(control.envelope);
     }
 }
 
 impl<T: Simd> SIMDVoiceGenerator<T, SIMDSampleMono<T>> for SIMDVoiceEnvelope<T> {
-    #[inline]
+    #[inline(always)]
     fn next_sample(&mut self) -> SIMDSampleMono<T> {
         simd_invoke!(T, {
             // Use loop instead of recursion to avoid function call overhead
