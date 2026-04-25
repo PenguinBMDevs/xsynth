@@ -49,9 +49,16 @@ pub struct F32BufferSampler(Arc<[f32]>);
 impl BufferSampler for F32BufferSampler {
     #[inline]
     fn get(&self, pos: usize) -> f32 {
-        // SAFETY: Callers ensure pos is within bounds via is_past_end checks
-        // Use unchecked access for maximum performance in the hot path
-        unsafe { *self.0.get_unchecked(pos) }
+        // Use checked access with clamping as defense-in-depth:
+        // Even though is_past_end should prevent out-of-bounds reads,
+        // SIMD processing reads up to 8 positions ahead of the checked point,
+        // and any logic error in is_past_end would cause undefined behavior.
+        // Clamping to 0 for out-of-range avoids crashes in edge cases.
+        if pos < self.0.len() {
+            unsafe { *self.0.get_unchecked(pos) }
+        } else {
+            0.0
+        }
     }
 
     fn length(&self) -> usize {
@@ -143,7 +150,8 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderNoLoop<Sampler> {
 
     fn is_past_end(&self, pos: usize) -> bool {
         if let Some(len) = self.length {
-            pos - self.offset.min(pos) >= len
+            // get() reads at pos + self.offset, so we must check against that
+            pos + self.offset >= len
         } else {
             false
         }
@@ -339,10 +347,13 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoopSustain<Sampler> {
         }
 
         if let Some(len) = self.length {
+            // During release, get() reads at pos - self.last
+            // So we need pos - self.last >= len to be past end
+            // Using saturating_sub to avoid underflow in edge cases
             let effective_pos = if self.last > self.offset {
-                pos + self.last - self.offset
+                pos.saturating_sub(self.last)
             } else {
-                pos
+                pos.saturating_sub(self.offset)
             };
             effective_pos >= len
         } else {
