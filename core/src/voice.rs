@@ -33,15 +33,23 @@ pub(crate) use control::*;
 mod cutoff;
 pub(crate) use cutoff::*;
 
-/// Options to modify the envelope of a voice.
+/// Options to modify the envelope of a voice using high-precision values.
 #[derive(Copy, Clone)]
 pub struct EnvelopeControlData {
-    /// Controls the attack. Can take values from 0 to 128
-    /// according to the MIDI CC spec.
-    pub attack: Option<u8>,
+    /// Controls the attack time in seconds.
+    /// When set to `Some`, overrides the original attack time.
+    pub attack: Option<f32>,
 
-    /// Controls the release. Can take values from 0 to 128
-    /// according to the MIDI CC spec.
+    /// Controls the release time in seconds.
+    /// When set to `Some`, overrides the original release time.
+    pub release: Option<f32>,
+}
+
+/// Options to modify the envelope of a voice using MIDI CC values (0-127).
+/// These are relative to the original envelope duration.
+#[derive(Copy, Clone)]
+pub struct EnvelopeCCControlData {
+    pub attack: Option<u8>,
     pub release: Option<u8>,
 }
 
@@ -61,8 +69,11 @@ pub struct VoiceControlData {
     /// Pitch multiplier
     pub voice_pitch_multiplier: f32,
 
-    /// Envelope control
+    /// Envelope control (high-precision, seconds)
     pub envelope: EnvelopeControlData,
+
+    /// Envelope control via MIDI CC (0-127, relative to original duration)
+    pub cc_envelope: EnvelopeCCControlData,
 }
 
 impl VoiceControlData {
@@ -70,6 +81,10 @@ impl VoiceControlData {
         VoiceControlData {
             voice_pitch_multiplier: 1.0,
             envelope: EnvelopeControlData {
+                attack: None,
+                release: None,
+            },
+            cc_envelope: EnvelopeCCControlData {
                 attack: None,
                 release: None,
             },

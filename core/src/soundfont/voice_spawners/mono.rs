@@ -156,6 +156,7 @@ impl<S: Simd + Send + Sync> MonoSampledVoiceSpawner<S> {
         let modified_params = SIMDVoiceEnvelope::<S>::get_modified_envelope(
             *self.volume_envelope_params.clone(),
             control.envelope,
+            control.cc_envelope,
             self.stream_params.sample_rate as f32,
         );
 

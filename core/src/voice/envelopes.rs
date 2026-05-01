@@ -1,7 +1,7 @@
 use simdeez::prelude::*;
 
 use crate::soundfont::{EnvelopeCurveType, EnvelopeOptions};
-use crate::voice::{EnvelopeControlData, ReleaseType, VoiceControlData};
+use crate::voice::{EnvelopeCCControlData, EnvelopeControlData, ReleaseType, VoiceControlData};
 
 use self::lerpers::{SIMDLerper, SIMDLerperConcave, SIMDLerperConvex, StageTime};
 
@@ -366,6 +366,7 @@ impl<T: Simd> SIMDVoiceEnvelope<T> {
     pub fn get_modified_envelope(
         mut params: EnvelopeParameters,
         envelope: EnvelopeControlData,
+        cc_envelope: EnvelopeCCControlData,
         sample_rate: f32,
     ) -> EnvelopeParameters {
         fn calculate_curve(value: u8, duration: f32) -> f32 {
@@ -376,41 +377,42 @@ impl<T: Simd> SIMDVoiceEnvelope<T> {
             }
         }
 
-        if let Some(attack) = envelope.attack {
-            let old_duration =
-                params.get_stage_duration(EnvelopeStage::Attack) as f32 / sample_rate;
-            let duration = (calculate_curve(attack, old_duration) * sample_rate) as u32;
-
-            let part = EnvelopeStage::Attack.as_usize();
-            match params.parts[part] {
+        let apply_duration = |params: &mut EnvelopeParameters,
+                              part: EnvelopeStage,
+                              duration_secs: f32| {
+            let duration = (duration_secs.max(0.0) * sample_rate) as u32;
+            let idx = part.as_usize();
+            match params.parts[idx] {
                 EnvelopePart::Lerp {
                     target,
                     duration: _,
-                } => params.modify_stage_data(part, EnvelopePart::lerp(target, duration)),
+                } => params.modify_stage_data(idx, EnvelopePart::lerp(target, duration)),
                 EnvelopePart::LerpConvex {
                     target,
                     duration: _,
-                } => params.modify_stage_data(part, EnvelopePart::lerp_convex(target, duration)),
+                } => params.modify_stage_data(idx, EnvelopePart::lerp_convex(target, duration)),
                 _ => {}
             }
+        };
+
+        // Attack: high-precision seconds takes priority, else fall back to CC
+        if let Some(attack_secs) = envelope.attack {
+            apply_duration(&mut params, EnvelopeStage::Attack, attack_secs);
+        } else if let Some(cc_attack) = cc_envelope.attack {
+            let old_duration =
+                params.get_stage_duration(EnvelopeStage::Attack) as f32 / sample_rate;
+            let duration_secs = calculate_curve(cc_attack, old_duration);
+            apply_duration(&mut params, EnvelopeStage::Attack, duration_secs);
         }
-        if let Some(release) = envelope.release {
+
+        // Release: high-precision seconds takes priority, else fall back to CC
+        if let Some(release_secs) = envelope.release {
+            apply_duration(&mut params, EnvelopeStage::Release, release_secs);
+        } else if let Some(cc_release) = cc_envelope.release {
             let old_duration =
                 params.get_stage_duration(EnvelopeStage::Release) as f32 / sample_rate;
-            let duration = (calculate_curve(release, old_duration).max(0.02) * sample_rate) as u32;
-
-            let part = EnvelopeStage::Release.as_usize();
-            match params.parts[part] {
-                EnvelopePart::Lerp {
-                    target,
-                    duration: _,
-                } => params.modify_stage_data(part, EnvelopePart::lerp(target, duration)),
-                EnvelopePart::LerpConcave {
-                    target,
-                    duration: _,
-                } => params.modify_stage_data(part, EnvelopePart::lerp_concave(target, duration)),
-                _ => {}
-            }
+            let duration_secs = calculate_curve(cc_release, old_duration).max(0.02);
+            apply_duration(&mut params, EnvelopeStage::Release, duration_secs);
         }
 
         params
@@ -433,10 +435,10 @@ impl<T: Simd> SIMDVoiceEnvelope<T> {
         self.state = self.params.get_stage_data(EnvelopeStage::Finished, 0.0);
     }
 
-    pub fn modify_envelope(&mut self, envelope: EnvelopeControlData) {
+    pub fn modify_envelope(&mut self, envelope: EnvelopeControlData, cc_envelope: EnvelopeCCControlData) {
         if !self.killed {
             self.params =
-                Self::get_modified_envelope(self.original_params, envelope, self.sample_rate);
+                Self::get_modified_envelope(self.original_params, envelope, cc_envelope, self.sample_rate);
             self.update_stage();
         }
     }
@@ -466,7 +468,7 @@ impl<T: Simd> VoiceGeneratorBase for SIMDVoiceEnvelope<T> {
 
     #[inline(always)]
     fn process_controls(&mut self, control: &VoiceControlData) {
-        self.modify_envelope(control.envelope);
+        self.modify_envelope(control.envelope, control.cc_envelope);
     }
 }
 

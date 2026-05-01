@@ -96,4 +96,28 @@ pub enum ControlEvent {
 
     /// Coarse tune value in semitones
     CoarseTune(f32),
+
+    /// High-precision volume control (0.0 = silent, 1.0 = max volume)
+    Volume(f32),
+
+    /// High-precision pan control (0.0 = left, 0.5 = center, 1.0 = right)
+    Pan(f32),
+
+    /// High-precision expression control (0.0 = silent, 1.0 = full expression)
+    Expression(f32),
+
+    /// High-precision cutoff frequency in Hz. `None` disables the cutoff filter.
+    Cutoff(Option<f32>),
+
+    /// High-precision resonance (Q factor). `None` disables resonance.
+    Resonance(Option<f32>),
+
+    /// High-precision attack time in seconds
+    AttackTime(f32),
+
+    /// High-precision release time in seconds
+    ReleaseTime(f32),
+
+    /// Damper/sustain pedal state
+    Damper(bool),
 }

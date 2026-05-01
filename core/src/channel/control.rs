@@ -187,12 +187,12 @@ impl VoiceChannel {
                 }
                 0x48 => {
                     // Release
-                    self.voice_control_data.envelope.release = Some(value);
+                    self.voice_control_data.cc_envelope.release = Some(value);
                     self.propagate_voice_controls();
                 }
                 0x49 => {
                     // Attack
-                    self.voice_control_data.envelope.attack = Some(value);
+                    self.voice_control_data.cc_envelope.attack = Some(value);
                     self.propagate_voice_controls();
                 }
                 0x4A => {
@@ -252,6 +252,38 @@ impl VoiceChannel {
             ControlEvent::CoarseTune(value) => {
                 self.control_event_data.coarse_tune_value = value;
                 self.process_pitch();
+            }
+            ControlEvent::Volume(value) => {
+                self.control_event_data.volume.set_end(value.clamp(0.0, 1.0));
+            }
+            ControlEvent::Pan(value) => {
+                self.control_event_data.pan.set_end(value.clamp(0.0, 1.0));
+            }
+            ControlEvent::Expression(value) => {
+                self.control_event_data
+                    .expression
+                    .set_end(value.clamp(0.0, 1.0));
+            }
+            ControlEvent::Cutoff(value) => {
+                self.control_event_data.cutoff = value;
+            }
+            ControlEvent::Resonance(value) => {
+                self.control_event_data.resonance = value;
+            }
+            ControlEvent::AttackTime(value) => {
+                self.voice_control_data.envelope.attack = Some(value);
+                self.voice_control_data.cc_envelope.attack = None;
+                self.propagate_voice_controls();
+            }
+            ControlEvent::ReleaseTime(value) => {
+                self.voice_control_data.envelope.release = Some(value);
+                self.voice_control_data.cc_envelope.release = None;
+                self.propagate_voice_controls();
+            }
+            ControlEvent::Damper(value) => {
+                for key in self.key_voices.iter_mut() {
+                    key.data.set_damper(value);
+                }
             }
         }
     }
