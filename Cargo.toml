@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["core", "clib", "soundfonts", "realtime", "render", "kdmapi"]
+#members = ["core", "clib", "soundfonts", "realtime", "render", "kdmapi"]
+members = ["core", "soundfonts"]
 
 [workspace.package]
 version = "0.4.0"
@@ -25,5 +26,5 @@ debug = true
 
 [workspace.dependencies]
 xsynth-core = { version = "=0.4.0", path = "core" }
-xsynth-realtime = { version = "=0.4.0", path = "realtime" }
+#xsynth-realtime = { version = "=0.4.0", path = "realtime" }
 xsynth-soundfonts = { version = "=0.4.0", path = "soundfonts" }
