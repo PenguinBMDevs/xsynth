@@ -103,8 +103,8 @@ impl<T: Simd> SIMDLerperConvex<T> {
 pub(super) struct StageTime<T: Simd> {
     stage_time_simd: T::Vf32,
     stage_end_time_f32: f32,
-    increment_simd: T::Vf32,      // The SIMD width as a SIMD float
-    stage_end_time_simd: T::Vf32, // The stage end time as a SIMD float
+    increment_simd: T::Vf32,     // The SIMD width as a SIMD float
+    inv_stage_end_time: T::Vf32, // 1.0 / end_time — avoid expensive SIMD div in hot path
 }
 
 impl<T: Simd> StageTime<T> {
@@ -119,7 +119,7 @@ impl<T: Simd> StageTime<T> {
                 stage_time_simd,
                 stage_end_time_f32: stage_end_time as f32,
                 increment_simd: T::Vf32::set1(T::Vf32::WIDTH as f32),
-                stage_end_time_simd: T::Vf32::set1(stage_end_time as f32),
+                inv_stage_end_time: T::Vf32::set1(1.0 / stage_end_time as f32),
             }
         })
     }
@@ -153,7 +153,7 @@ impl<T: Simd> StageTime<T> {
 
     #[inline(always)]
     pub fn progress_simd_array(&self) -> T::Vf32 {
-        simd_invoke!(T, *self.raw_simd_array() / self.stage_end_time_simd)
+        simd_invoke!(T, *self.raw_simd_array() * self.inv_stage_end_time)
     }
 
     #[inline(always)]

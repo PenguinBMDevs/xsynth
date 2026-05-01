@@ -26,7 +26,7 @@ use xsynth_core::{
 };
 
 use crate::{
-    util::ReadWriteAtomicU64, RealtimeEventSender, SynthEvent, ThreadCount, XSynthRealtimeConfig,
+    RealtimeEventSender, SynthEvent, ThreadCount, XSynthRealtimeConfig,
 };
 
 #[derive(Debug, Error)]
@@ -224,20 +224,18 @@ impl RealtimeSynth {
                 render,
                 stream_params,
                 calculate_render_size(sample_rate, config.render_window_ms),
-            )
-            .map_err(RealtimeSynthError::BufferedRendererThreadSpawn)?,
+            ),
         ));
         let (stream_control, stream_owner) =
             spawn_stream_thread(device.clone(), stream_config, buffered.clone())?;
 
-        let max_nps = Arc::new(ReadWriteAtomicU64::new(10000));
+        let max_nps = Arc::new(AtomicU64::new(10000));
 
         Ok(Self {
             data: Some(RealtimeSynthThreadSharedData {
                 buffered_renderer: buffered,
 
-                event_senders: RealtimeEventSender::new(senders, max_nps, config.ignore_range)
-                    .map_err(RealtimeSynthError::EventSenderInit)?,
+                event_senders: RealtimeEventSender::new(senders, max_nps, config.ignore_range),
                 stream_control,
             }),
             stream_owner: Some(stream_owner),

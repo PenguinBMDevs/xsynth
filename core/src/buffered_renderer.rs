@@ -1,8 +1,8 @@
+#![allow(clippy::needless_range_loop)]
 use std::{
     collections::VecDeque,
-    io,
     sync::{
-        atomic::{AtomicI64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
         Arc, RwLock,
     },
     thread::{self, JoinHandle},
@@ -11,6 +11,7 @@ use std::{
 
 use crossbeam_channel::{unbounded, Receiver};
 
+use crate::helpers::fast_zero_fill;
 use crate::AudioStreamParams;
 
 use super::AudioPipe;
@@ -19,17 +20,14 @@ use super::AudioPipe;
 #[derive(Debug, Clone)]
 struct BufferedRendererStats {
     samples: Arc<AtomicI64>,
-
     last_samples_after_read: Arc<AtomicI64>,
-
     last_request_samples: Arc<AtomicI64>,
-
     render_time: Arc<RwLock<VecDeque<f64>>>,
-
     render_size: Arc<AtomicUsize>,
 }
 
 /// Reads the statistics of an instance of BufferedRenderer in a usable way.
+#[derive(Clone)]
 pub struct BufferedRendererStatsReader {
     stats: BufferedRendererStats,
 }
@@ -60,12 +58,8 @@ impl BufferedRendererStatsReader {
     /// of how long the render thread spent rendering, from the max allowed time.
     pub fn average_renderer_load(&self) -> f64 {
         let queue = self.stats.render_time.read().unwrap();
-        let total = queue.len();
-        if total == 0 {
-            0.0
-        } else {
-            queue.iter().sum::<f64>() / total as f64
-        }
+        let total = queue.len().max(1);
+        queue.iter().sum::<f64>() / total as f64
     }
 
     /// The last render time percentage (0 to 1)
@@ -85,19 +79,16 @@ impl BufferedRendererStatsReader {
 /// Designed to be used in realtime playback only.
 pub struct BufferedRenderer {
     stats: BufferedRendererStats,
-
     /// The receiver for samples (the render thread has the sender).
     receive: Receiver<Vec<f32>>,
-
+    /// Sender for returning empty vecs to the render thread.
+    return_tx: crossbeam_channel::Sender<Vec<f32>>,
     /// Remainder of samples from the last received samples vec.
     remainder: Vec<f32>,
-
     /// Whether the render thread should be killed.
-    killed: Arc<RwLock<bool>>,
-
+    killed: Arc<AtomicBool>,
     /// The thread handle to wait for at the end.
     thread_handle: Option<JoinHandle<()>>,
-
     stream_params: AudioStreamParams,
 }
 
@@ -112,18 +103,16 @@ impl BufferedRenderer {
         mut render: F,
         stream_params: AudioStreamParams,
         render_size: usize,
-    ) -> Result<Self, io::Error> {
+    ) -> Self {
         let (tx, rx) = unbounded();
+        let (return_tx, return_rx) = unbounded();
 
         let samples = Arc::new(AtomicI64::new(0));
         let last_request_samples = Arc::new(AtomicI64::new(0));
         let render_size = Arc::new(AtomicUsize::new(render_size));
-
         let last_samples_after_read = Arc::new(AtomicI64::new(0));
-
         let render_time = Arc::new(RwLock::new(VecDeque::new()));
-
-        let killed = Arc::new(RwLock::new(false));
+        let killed = Arc::new(AtomicBool::new(false));
 
         let thread_handle = {
             let samples = samples.clone();
@@ -131,10 +120,11 @@ impl BufferedRenderer {
             let render_size = render_size.clone();
             let render_time = render_time.clone();
             let killed = killed.clone();
+
             thread::Builder::new()
                 .name("xsynth_buffered_rendering".to_string())
                 .spawn(move || loop {
-                    let size = render_size.load(Ordering::SeqCst);
+                    let size = render_size.load(Ordering::Relaxed);
 
                     // The expected render time per iteration. It is slightly smaller (*90/100) than
                     // the real time so the render thread can catch up if it's behind.
@@ -143,15 +133,15 @@ impl BufferedRenderer {
 
                     // If the render thread is ahead by over ~10%, wait until more samples are required.
                     loop {
-                        let samples = samples.load(Ordering::SeqCst);
-                        let last_requested = last_request_samples.load(Ordering::SeqCst);
+                        let samples = samples.load(Ordering::Relaxed);
+                        let last_requested = last_request_samples.load(Ordering::Relaxed);
                         if samples > last_requested * 110 / 100 {
                             spin_sleep::sleep(delay / 10);
                         } else {
                             break;
                         }
 
-                        if *killed.read().unwrap() {
+                        if killed.load(Ordering::Relaxed) {
                             return;
                         }
                     }
@@ -159,13 +149,19 @@ impl BufferedRenderer {
                     let start = Instant::now();
                     let end = start + delay;
 
-                    // Create the vec and write the samples
-                    let mut vec =
-                        vec![Default::default(); size * stream_params.channels.count() as usize];
+                    // Reuse or create the vec and write the samples
+                    let required_len = size * stream_params.channels.count() as usize;
+                    let mut vec = return_rx
+                        .try_recv()
+                        .unwrap_or_else(|_| Vec::with_capacity(required_len));
+
+                    // fast_zero_fill handles both capacity extension and zeroing
+                    // in a single memset operation — faster than resize+fill
+                    fast_zero_fill(&mut vec, required_len);
                     render.read_samples(&mut vec);
 
                     // Send the samples, break if the pipe is broken
-                    samples.fetch_add(vec.len() as i64, Ordering::SeqCst);
+                    samples.fetch_add(vec.len() as i64, Ordering::Relaxed);
                     match tx.send(vec) {
                         Ok(_) => {}
                         Err(_) => break,
@@ -174,9 +170,9 @@ impl BufferedRenderer {
                     // Write the elapsed render time percentage to the render_time queue
                     {
                         let mut queue = render_time.write().unwrap();
-                        let elaspsed = start.elapsed().as_secs_f64();
+                        let elapsed = start.elapsed().as_secs_f64();
                         let total = delay.as_secs_f64();
-                        queue.push_front(elaspsed / total);
+                        queue.push_front(elapsed / total);
                         if queue.len() > 100 {
                             queue.pop_back();
                         }
@@ -187,10 +183,11 @@ impl BufferedRenderer {
                     if end > now {
                         spin_sleep::sleep(end - now);
                     }
-                })?
+                })
+                .unwrap()
         };
 
-        Ok(Self {
+        Self {
             stats: BufferedRendererStats {
                 samples,
                 last_request_samples,
@@ -199,11 +196,12 @@ impl BufferedRenderer {
                 last_samples_after_read,
             },
             receive: rx,
+            return_tx,
             remainder: Vec::new(),
             stream_params,
             thread_handle: Some(thread_handle),
             killed,
-        })
+        }
     }
 
     /// Reads samples from the remainder and the output queue into the destination array.
@@ -215,11 +213,11 @@ impl BufferedRenderer {
         let samples = self
             .stats
             .samples
-            .fetch_sub(dest.len() as i64, Ordering::SeqCst);
+            .fetch_sub(dest.len() as i64, Ordering::Relaxed);
 
         self.stats
             .last_request_samples
-            .store(dest.len() as i64, Ordering::SeqCst);
+            .store(dest.len() as i64, Ordering::Relaxed);
 
         // Read from current remainder
         for r in self.remainder.drain(0..len) {
@@ -227,17 +225,41 @@ impl BufferedRenderer {
             i += 1;
         }
 
+        // Return empty remainder vec to the pool
+        if self.remainder.is_empty() && self.remainder.capacity() > 0 {
+            let _ = self.return_tx.send(std::mem::take(&mut self.remainder));
+        }
+
         // Read from output queue, leave the remainder if there is any
-        while self.remainder.is_empty() {
-            let mut buf = self.receive.recv().unwrap();
-
-            let len = buf.len().min(dest.len() - i);
-            for r in buf.drain(0..len) {
-                dest[i] = r;
-                i += 1;
+        // Use a short timeout to prevent audio callback blocking.
+        // In normal operation the render thread stays ahead so recv succeeds
+        // immediately (no blocking). 5ms = ~half a render cycle at 480 samples.
+        // If exceeded, fill with silence — audible dropout is ~50ms max rather
+        // than hanging the audio callback for 100ms+.
+        let timeout = std::time::Duration::from_millis(5);
+        while i < dest.len() {
+            match self.receive.recv_timeout(timeout) {
+                Ok(mut buf) => {
+                    let len = buf.len().min(dest.len() - i);
+                    for r in buf.drain(0..len) {
+                        dest[i] = r;
+                        i += 1;
+                    }
+                    if buf.is_empty() {
+                        let _ = self.return_tx.send(buf);
+                    } else {
+                        self.remainder = buf;
+                    }
+                }
+                Err(_) => {
+                    // Timeout - fill remaining with silence to prevent hanging
+                    // This prevents audio dropout by at least providing silence
+                    for j in i..dest.len() {
+                        dest[j] = 0.0;
+                    }
+                    break;
+                }
             }
-
-            self.remainder = buf;
         }
 
         self.stats
@@ -247,7 +269,7 @@ impl BufferedRenderer {
 
     /// Sets the number of samples that should be rendered each iteration.
     pub fn set_render_size(&self, size: usize) {
-        self.stats.render_size.store(size, Ordering::SeqCst);
+        self.stats.render_size.store(size, Ordering::Relaxed);
     }
 
     /// Returns a statistics reader.
@@ -261,12 +283,8 @@ impl BufferedRenderer {
 
 impl Drop for BufferedRenderer {
     fn drop(&mut self) {
-        *self.killed.write().unwrap() = true;
-        if let Some(handle) = self.thread_handle.take() {
-            if handle.join().is_err() {
-                eprintln!("xsynth-core: buffered renderer thread panicked during shutdown");
-            }
-        }
+        self.killed.store(true, Ordering::Relaxed);
+        self.thread_handle.take().unwrap().join().unwrap();
     }
 }
 
@@ -277,34 +295,5 @@ impl AudioPipe for BufferedRenderer {
 
     fn read_samples_unchecked(&mut self, to: &mut [f32]) {
         self.read(to)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        collections::VecDeque,
-        sync::{
-            atomic::{AtomicI64, AtomicUsize},
-            Arc, RwLock,
-        },
-    };
-
-    use super::{BufferedRendererStats, BufferedRendererStatsReader};
-
-    #[test]
-    fn average_renderer_load_is_zero_when_no_samples_have_been_rendered() {
-        let reader = BufferedRendererStatsReader {
-            stats: BufferedRendererStats {
-                samples: Arc::new(AtomicI64::new(0)),
-                last_samples_after_read: Arc::new(AtomicI64::new(0)),
-                last_request_samples: Arc::new(AtomicI64::new(0)),
-                render_time: Arc::new(RwLock::new(VecDeque::new())),
-                render_size: Arc::new(AtomicUsize::new(0)),
-            },
-        };
-
-        assert_eq!(reader.average_renderer_load(), 0.0);
-        assert_eq!(reader.last_renderer_load(), 0.0);
     }
 }

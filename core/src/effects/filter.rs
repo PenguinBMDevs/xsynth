@@ -27,7 +27,6 @@ impl BiQuadFilter {
             Some(q) => q,
             None => Q_BUTTERWORTH_F32,
         };
-        let freq = sanitize_freq(freq, sample_rate);
 
         match fil_type {
             FilterType::LowPass => {
@@ -68,12 +67,6 @@ impl BiQuadFilter {
         }
         out
     }
-}
-
-fn sanitize_freq(freq: f32, sample_rate: f32) -> f32 {
-    let nyquist = (sample_rate * 0.5).max(1.0);
-    let max_freq = (nyquist - 1.0).max(1.0);
-    freq.clamp(1.0, max_freq)
 }
 
 /// A multi-channel bi-quad audio filter.
@@ -135,10 +128,14 @@ impl MultiChannelBiQuad {
     /// Filters the audio of the given sample buffer.
     pub fn process(&mut self, sample: &mut [f32]) {
         let channel_count = self.channels.len();
+        let mut last_v = None;
         for (i, s) in sample.iter_mut().enumerate() {
             if i % channel_count == 0 {
                 let v = self.value.get_next();
-                self.set_coefficients(v, self.q);
+                if Some(v) != last_v {
+                    self.set_coefficients(v, self.q);
+                    last_v = Some(v);
+                }
             }
             *s = self.channels[i % channel_count].process(*s);
         }

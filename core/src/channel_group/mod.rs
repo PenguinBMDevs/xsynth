@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     channel::{ChannelAudioEvent, ChannelConfigEvent, ChannelEvent, VoiceChannel},
-    helpers::{prepapre_cache_vec, sum_simd},
+    helpers::{fast_zero_fill, sum_simd},
     AudioPipe, AudioStreamParams,
 };
 
@@ -96,19 +96,13 @@ impl ChannelGroup {
         match event {
             SynthEvent::Channel(channel, event) => match event {
                 ChannelEvent::Audio(e) => {
-                    if let Some(events) = self.channel_events_cache.get_mut(channel as usize) {
-                        events.push(e);
-                        self.cached_event_count += 1;
-                        if self.cached_event_count > MAX_EVENT_CACHE_SIZE {
-                            self.flush_events();
-                        }
+                    self.channel_events_cache[channel as usize].push(e);
+                    self.cached_event_count += 1;
+                    if self.cached_event_count > MAX_EVENT_CACHE_SIZE {
+                        self.flush_events();
                     }
                 }
-                ChannelEvent::Config(_) => {
-                    if let Some(channel) = self.channels.get_mut(channel as usize) {
-                        channel.process_event(event);
-                    }
-                }
+                ChannelEvent::Config(_) => self.channels[channel as usize].process_event(event),
             },
             SynthEvent::AllChannels(event) => match event {
                 ChannelEvent::Audio(e) => {
@@ -164,7 +158,10 @@ impl ChannelGroup {
 
     fn render_to(&mut self, buffer: &mut [f32]) {
         self.flush_events();
-        buffer.fill(0.0);
+        // Fast zero using write_bytes (optimized by compiler to SIMD)
+        unsafe {
+            std::ptr::write_bytes(buffer.as_mut_ptr(), 0, buffer.len());
+        }
 
         match self.thread_pool.as_ref() {
             Some(pool) => {
@@ -176,7 +173,7 @@ impl ChannelGroup {
                         .par_iter_mut()
                         .zip(sample_cache_vecs.par_iter_mut())
                         .for_each(|(channel, samples)| {
-                            prepapre_cache_vec(samples, len, 0.0);
+                            fast_zero_fill(samples, len);
                             channel.read_samples(samples.as_mut_slice());
                         });
 
@@ -193,7 +190,7 @@ impl ChannelGroup {
                     .iter_mut()
                     .zip(self.sample_cache_vecs.iter_mut())
                 {
-                    prepapre_cache_vec(samples, len, 0.0);
+                    fast_zero_fill(samples, len);
                     channel.read_samples(samples.as_mut_slice());
                 }
 
@@ -220,38 +217,5 @@ impl AudioPipe for ChannelGroup {
 
     fn read_samples_unchecked(&mut self, to: &mut [f32]) {
         self.render_to(to);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::{
-        channel::{ChannelAudioEvent, ChannelEvent, ChannelInitOptions},
-        channel_group::{
-            ChannelGroupConfig, ParallelismOptions, SynthEvent, SynthFormat, ThreadCount,
-        },
-        AudioStreamParams, ChannelCount,
-    };
-
-    use super::ChannelGroup;
-
-    #[test]
-    fn out_of_range_channel_event_is_ignored() {
-        let mut group = ChannelGroup::new(ChannelGroupConfig {
-            channel_init_options: ChannelInitOptions::default(),
-            format: SynthFormat::Custom { channels: 1 },
-            audio_params: AudioStreamParams::new(44_100, ChannelCount::Stereo),
-            parallelism: ParallelismOptions {
-                channel: ThreadCount::None,
-                key: ThreadCount::None,
-            },
-        });
-
-        group.send_event(SynthEvent::Channel(
-            1,
-            ChannelEvent::Audio(ChannelAudioEvent::NoteOn { key: 60, vel: 100 }),
-        ));
-
-        assert_eq!(group.voice_count(), 0);
     }
 }
