@@ -81,10 +81,14 @@ impl Default for ChannelInitOptions {
 /// - `CC10`: Pan
 /// - `CC11`: Expression
 /// - `CC64`: Damper pedal
+/// - `CC70`: Sustain level
 /// - `CC71`: Cutoff resonance
 /// - `CC72`: Release time multiplier
 /// - `CC73`: Attack time multiplier
-/// - `CC74`: Cutoff frequency
+/// - `CC74`: Low-pass cutoff frequency
+/// - `CC75`: Decay time multiplier
+/// - `CC79`: Hold time multiplier
+/// - `CC94`: Delay time multiplier
 /// - `CC120`: All sounds off
 /// - `CC121`: Reset all controllers
 /// - `CC123`: All notes off
@@ -104,6 +108,7 @@ pub struct VoiceChannel {
 
     /// Effects
     cutoff: MultiChannelBiQuad,
+    highpass: MultiChannelBiQuad,
 }
 
 impl VoiceChannel {
@@ -148,6 +153,13 @@ impl VoiceChannel {
                 stream_params.sample_rate as f32,
                 None,
             ),
+            highpass: MultiChannelBiQuad::new(
+                stream_params.channels.count() as usize,
+                FilterType::HighPass,
+                1.0,
+                stream_params.sample_rate as f32,
+                None,
+            ),
         }
     }
 
@@ -181,11 +193,32 @@ impl VoiceChannel {
             }
         }
 
-        // Cutoff
-        if let Some(cutoff) = control.cutoff {
-            self.cutoff
-                .set_filter_type(FilterType::LowPass, cutoff, control.resonance);
+        // Low-pass filter
+        if control.is_lowpass_active() {
+            self.cutoff.set_filter_type(
+                FilterType::LowPass,
+                control.cutoff,
+                if control.resonance_active {
+                    Some(control.resonance)
+                } else {
+                    None
+                },
+            );
             self.cutoff.process(out);
+        }
+
+        // High-pass filter
+        if control.is_highpass_active() {
+            self.highpass.set_filter_type(
+                FilterType::HighPass,
+                control.highpass_cutoff,
+                if control.highpass_resonance_active {
+                    Some(control.highpass_resonance)
+                } else {
+                    None
+                },
+            );
+            self.highpass.process(out);
         }
     }
 

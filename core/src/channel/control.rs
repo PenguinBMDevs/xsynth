@@ -52,13 +52,26 @@ pub(super) struct ControlEventData {
     coarse_tune_value: f32,
     pub volume: ValueLerp, // 0.0 = silent, 1.0 = max volume
     pub pan: ValueLerp,    // 0.0 = left, 0.5 = center, 1.0 = right
-    pub cutoff: Option<f32>,
-    pub resonance: Option<f32>,
     pub expression: ValueLerp,
+
+    // Low-pass filter
+    pub cutoff: f32,
+    pub cutoff_active: bool,
+    pub resonance: f32,
+    pub resonance_active: bool,
+
+    // High-pass filter
+    pub highpass_cutoff: f32,
+    pub highpass_active: bool,
+    pub highpass_resonance: f32,
+    pub highpass_resonance_active: bool,
+
+    sample_rate: f32,
 }
 
 impl ControlEventData {
     pub fn new_defaults(sample_rate: u32) -> Self {
+        let sr = sample_rate as f32;
         ControlEventData {
             selected_lsb: -1,
             selected_msb: -1,
@@ -72,10 +85,25 @@ impl ControlEventData {
             coarse_tune_value: 0.0,
             volume: ValueLerp::new(1.0, sample_rate),
             pan: ValueLerp::new(0.5, sample_rate),
-            cutoff: None,
-            resonance: None,
             expression: ValueLerp::new(1.0, sample_rate),
+            cutoff: sr / 2.0 - 100.0,
+            cutoff_active: false,
+            resonance: Q_BUTTERWORTH_F32,
+            resonance_active: false,
+            highpass_cutoff: 0.0,
+            highpass_active: false,
+            highpass_resonance: Q_BUTTERWORTH_F32,
+            highpass_resonance_active: false,
+            sample_rate: sr,
         }
+    }
+
+    pub fn is_lowpass_active(&self) -> bool {
+        self.cutoff_active && self.cutoff < self.sample_rate / 2.0 - 100.0
+    }
+
+    pub fn is_highpass_active(&self) -> bool {
+        self.highpass_active && self.highpass_cutoff > 1.0
     }
 }
 
@@ -176,40 +204,51 @@ impl VoiceChannel {
                     }
                 }
                 0x47 => {
-                    // Resonance
-                    if value > 64 {
-                        let db = (value as f32 - 64.0) / 2.4;
-                        let value = db_to_amp(db) * Q_BUTTERWORTH_F32;
-                        self.control_event_data.resonance = Some(value);
-                    } else {
-                        self.control_event_data.resonance = None;
-                    }
+                    // Resonance (CC71)
+                    let db = (value as f32 - 64.0) / 2.4;
+                    self.control_event_data.resonance = db_to_amp(db) * Q_BUTTERWORTH_F32;
+                    self.control_event_data.resonance_active = true;
                 }
                 0x48 => {
-                    // Release
+                    // Release (CC72)
                     self.voice_control_data.cc_envelope.release = Some(value);
                     self.propagate_voice_controls();
                 }
                 0x49 => {
-                    // Attack
+                    // Attack (CC73)
                     self.voice_control_data.cc_envelope.attack = Some(value);
                     self.propagate_voice_controls();
                 }
                 0x4A => {
-                    // Cutoff
+                    // Cutoff (CC74) — low-pass only, 0..63 active, 64..127 off
                     if value < 64 {
-                        let value = value as usize + 64;
-                        let mut freq = FREQS[value];
+                        let idx = value as usize + 64;
+                        let mut freq = FREQS[idx];
                         if freq > 7000.0 {
-                            // I hate BASS
                             let mult = freq / 7000.0 - 1.0;
                             let mult = mult * 2.36 + 1.0;
                             freq = mult * 7000.0;
                         }
-                        self.control_event_data.cutoff = Some(freq);
+                        self.control_event_data.cutoff = freq;
+                        self.control_event_data.cutoff_active = true;
                     } else {
-                        self.control_event_data.cutoff = None;
+                        self.control_event_data.cutoff_active = false;
                     }
+                }
+                0x46 => {
+                    // Decay (CC75)
+                    self.voice_control_data.cc_envelope.decay = Some(value);
+                    self.propagate_voice_controls();
+                }
+                0x4F => {
+                    // Sustain (CC79, custom mapping)
+                    self.voice_control_data.cc_envelope.sustain_percent = Some(value);
+                    self.propagate_voice_controls();
+                }
+                0x5E => {
+                    // Delay (CC94, custom mapping)
+                    self.voice_control_data.cc_envelope.delay = Some(value);
+                    self.propagate_voice_controls();
                 }
                 0x78 if value == 0 => {
                     // All Sounds Off
@@ -265,18 +304,49 @@ impl VoiceChannel {
                     .set_end(value.clamp(0.0, 1.0));
             }
             ControlEvent::Cutoff(value) => {
-                self.control_event_data.cutoff = value;
+                self.control_event_data.cutoff = value.max(1.0);
+                self.control_event_data.cutoff_active = true;
             }
             ControlEvent::Resonance(value) => {
-                self.control_event_data.resonance = value;
+                self.control_event_data.resonance = value.max(0.01);
+                self.control_event_data.resonance_active = true;
+            }
+            ControlEvent::HighPassCutoff(value) => {
+                self.control_event_data.highpass_cutoff = value.max(0.0);
+                self.control_event_data.highpass_active = true;
+            }
+            ControlEvent::HighPassResonance(value) => {
+                self.control_event_data.highpass_resonance = value.max(0.01);
+                self.control_event_data.highpass_resonance_active = true;
+            }
+            ControlEvent::DelayTime(value) => {
+                self.voice_control_data.envelope.delay = Some(value.max(0.0));
+                self.voice_control_data.cc_envelope.delay = None;
+                self.propagate_voice_controls();
             }
             ControlEvent::AttackTime(value) => {
-                self.voice_control_data.envelope.attack = Some(value);
+                self.voice_control_data.envelope.attack = Some(value.max(0.0));
                 self.voice_control_data.cc_envelope.attack = None;
                 self.propagate_voice_controls();
             }
+            ControlEvent::HoldTime(value) => {
+                self.voice_control_data.envelope.hold = Some(value.max(0.0));
+                self.voice_control_data.cc_envelope.hold = None;
+                self.propagate_voice_controls();
+            }
+            ControlEvent::DecayTime(value) => {
+                self.voice_control_data.envelope.decay = Some(value.max(0.0));
+                self.voice_control_data.cc_envelope.decay = None;
+                self.propagate_voice_controls();
+            }
+            ControlEvent::SustainLevel(value) => {
+                self.voice_control_data.envelope.sustain_percent =
+                    Some(value.clamp(0.0, 1.0));
+                self.voice_control_data.cc_envelope.sustain_percent = None;
+                self.propagate_voice_controls();
+            }
             ControlEvent::ReleaseTime(value) => {
-                self.voice_control_data.envelope.release = Some(value);
+                self.voice_control_data.envelope.release = Some(value.max(0.0));
                 self.voice_control_data.cc_envelope.release = None;
                 self.propagate_voice_controls();
             }
@@ -303,8 +373,6 @@ impl VoiceChannel {
         self.control_event_data = ControlEventData::new_defaults(self.stream_params.sample_rate);
         self.voice_control_data = VoiceControlData::new_defaults();
         self.propagate_voice_controls();
-
-        self.control_event_data.cutoff = None;
 
         for key in self.key_voices.iter_mut() {
             key.data.set_damper(false);

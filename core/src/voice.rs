@@ -36,12 +36,22 @@ pub(crate) use cutoff::*;
 /// Options to modify the envelope of a voice using high-precision values.
 #[derive(Copy, Clone)]
 pub struct EnvelopeControlData {
+    /// Controls the delay time in seconds.
+    pub delay: Option<f32>,
+
     /// Controls the attack time in seconds.
-    /// When set to `Some`, overrides the original attack time.
     pub attack: Option<f32>,
 
+    /// Controls the hold time in seconds.
+    pub hold: Option<f32>,
+
+    /// Controls the decay time in seconds.
+    pub decay: Option<f32>,
+
+    /// Controls the sustain level (0.0 = silent, 1.0 = max).
+    pub sustain_percent: Option<f32>,
+
     /// Controls the release time in seconds.
-    /// When set to `Some`, overrides the original release time.
     pub release: Option<f32>,
 }
 
@@ -49,7 +59,11 @@ pub struct EnvelopeControlData {
 /// These are relative to the original envelope duration.
 #[derive(Copy, Clone)]
 pub struct EnvelopeCCControlData {
+    pub delay: Option<u8>,
     pub attack: Option<u8>,
+    pub hold: Option<u8>,
+    pub decay: Option<u8>,
+    pub sustain_percent: Option<u8>,
     pub release: Option<u8>,
 }
 
@@ -81,11 +95,19 @@ impl VoiceControlData {
         VoiceControlData {
             voice_pitch_multiplier: 1.0,
             envelope: EnvelopeControlData {
+                delay: None,
                 attack: None,
+                hold: None,
+                decay: None,
+                sustain_percent: None,
                 release: None,
             },
             cc_envelope: EnvelopeCCControlData {
+                delay: None,
                 attack: None,
+                hold: None,
+                decay: None,
+                sustain_percent: None,
                 release: None,
             },
         }

@@ -387,6 +387,10 @@ impl<T: Simd> SIMDVoiceEnvelope<T> {
                     target,
                     duration: _,
                 } => params.modify_stage_data(idx, EnvelopePart::lerp(target, duration)),
+                EnvelopePart::LerpConcave {
+                    target,
+                    duration: _,
+                } => params.modify_stage_data(idx, EnvelopePart::lerp_concave(target, duration)),
                 EnvelopePart::LerpConvex {
                     target,
                     duration: _,
@@ -395,24 +399,58 @@ impl<T: Simd> SIMDVoiceEnvelope<T> {
             }
         };
 
+        let apply_cc_duration = |params: &mut EnvelopeParameters,
+                                 part: EnvelopeStage,
+                                 cc_value: u8,
+                                 min_secs: f32| {
+            let old_duration = params.get_stage_duration(part) as f32 / sample_rate;
+            let duration_secs = calculate_curve(cc_value, old_duration).max(min_secs);
+            apply_duration(params, part, duration_secs);
+        };
+
+        // Delay: high-precision seconds takes priority, else fall back to CC
+        if let Some(delay_secs) = envelope.delay {
+            apply_duration(&mut params, EnvelopeStage::Delay, delay_secs);
+        } else if let Some(cc_delay) = cc_envelope.delay {
+            apply_cc_duration(&mut params, EnvelopeStage::Delay, cc_delay, 0.0);
+        }
+
         // Attack: high-precision seconds takes priority, else fall back to CC
         if let Some(attack_secs) = envelope.attack {
             apply_duration(&mut params, EnvelopeStage::Attack, attack_secs);
         } else if let Some(cc_attack) = cc_envelope.attack {
-            let old_duration =
-                params.get_stage_duration(EnvelopeStage::Attack) as f32 / sample_rate;
-            let duration_secs = calculate_curve(cc_attack, old_duration);
-            apply_duration(&mut params, EnvelopeStage::Attack, duration_secs);
+            apply_cc_duration(&mut params, EnvelopeStage::Attack, cc_attack, 0.0);
+        }
+
+        // Hold: high-precision seconds takes priority, else fall back to CC
+        if let Some(hold_secs) = envelope.hold {
+            apply_duration(&mut params, EnvelopeStage::Hold, hold_secs);
+        } else if let Some(cc_hold) = cc_envelope.hold {
+            apply_cc_duration(&mut params, EnvelopeStage::Hold, cc_hold, 0.0);
+        }
+
+        // Decay: high-precision seconds takes priority, else fall back to CC
+        if let Some(decay_secs) = envelope.decay {
+            apply_duration(&mut params, EnvelopeStage::Decay, decay_secs);
+        } else if let Some(cc_decay) = cc_envelope.decay {
+            apply_cc_duration(&mut params, EnvelopeStage::Decay, cc_decay, 0.0);
+        }
+
+        // Sustain: high-precision level takes priority, else fall back to CC
+        if let Some(sustain) = envelope.sustain_percent {
+            let idx = EnvelopeStage::Sustain.as_usize();
+            params.modify_stage_data(idx, EnvelopePart::hold(sustain.clamp(0.0, 1.0)));
+        } else if let Some(cc_sustain) = cc_envelope.sustain_percent {
+            let idx = EnvelopeStage::Sustain.as_usize();
+            let level = (cc_sustain as f32 / 127.0).clamp(0.0, 1.0);
+            params.modify_stage_data(idx, EnvelopePart::hold(level));
         }
 
         // Release: high-precision seconds takes priority, else fall back to CC
         if let Some(release_secs) = envelope.release {
             apply_duration(&mut params, EnvelopeStage::Release, release_secs);
         } else if let Some(cc_release) = cc_envelope.release {
-            let old_duration =
-                params.get_stage_duration(EnvelopeStage::Release) as f32 / sample_rate;
-            let duration_secs = calculate_curve(cc_release, old_duration).max(0.02);
-            apply_duration(&mut params, EnvelopeStage::Release, duration_secs);
+            apply_cc_duration(&mut params, EnvelopeStage::Release, cc_release, 0.02);
         }
 
         params

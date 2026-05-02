@@ -106,14 +106,32 @@ pub enum ControlEvent {
     /// High-precision expression control (0.0 = silent, 1.0 = full expression)
     Expression(f32),
 
-    /// High-precision cutoff frequency in Hz. `None` disables the cutoff filter.
-    Cutoff(Option<f32>),
+    /// High-precision low-pass cutoff frequency in Hz.
+    Cutoff(f32),
 
-    /// High-precision resonance (Q factor). `None` disables resonance.
-    Resonance(Option<f32>),
+    /// High-precision low-pass resonance (Q factor).
+    Resonance(f32),
+
+    /// High-precision high-pass cutoff frequency in Hz.
+    HighPassCutoff(f32),
+
+    /// High-precision high-pass resonance (Q factor).
+    HighPassResonance(f32),
+
+    /// High-precision delay time in seconds
+    DelayTime(f32),
 
     /// High-precision attack time in seconds
     AttackTime(f32),
+
+    /// High-precision hold time in seconds
+    HoldTime(f32),
+
+    /// High-precision decay time in seconds
+    DecayTime(f32),
+
+    /// High-precision sustain level (0.0 = silent, 1.0 = max)
+    SustainLevel(f32),
 
     /// High-precision release time in seconds
     ReleaseTime(f32),
