@@ -129,15 +129,24 @@ impl MultiChannelBiQuad {
     pub fn process(&mut self, sample: &mut [f32]) {
         let channel_count = self.channels.len();
         let mut last_v = None;
+        let mut current_v = 0.0;
         for (i, s) in sample.iter_mut().enumerate() {
             if i % channel_count == 0 {
-                let v = self.value.get_next();
-                if Some(v) != last_v {
-                    self.set_coefficients(v, self.q);
-                    last_v = Some(v);
+                current_v = self.value.get_next();
+                let safe_freq = if matches!(self.fil_type, FilterType::LowPass) {
+                    current_v.max(20.0)
+                } else {
+                    current_v
+                };
+                if Some(safe_freq) != last_v {
+                    self.set_coefficients(safe_freq, self.q);
+                    last_v = Some(safe_freq);
                 }
             }
             *s = self.channels[i % channel_count].process(*s);
+            if matches!(self.fil_type, FilterType::LowPass) && current_v < 20.0 {
+                *s *= current_v / 20.0;
+            }
         }
     }
 }
