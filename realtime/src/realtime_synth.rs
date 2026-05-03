@@ -9,7 +9,7 @@ use std::{
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    Device, PauseStreamError, PlayStreamError, SizedSample, Stream, SupportedStreamConfig,
+    Device, Host, PauseStreamError, PlayStreamError, SizedSample, Stream, SupportedStreamConfig,
 };
 use crossbeam_channel::{bounded, unbounded};
 
@@ -94,10 +94,36 @@ pub struct RealtimeSynth {
 }
 
 impl RealtimeSynth {
+    /// Selects the audio host, preferring JACK on Linux when available.
+    ///
+    /// On Linux, if cpal was compiled with the `jack` feature and a JACK daemon
+    /// is running, this returns the JACK host. Otherwise falls back to the
+    /// platform default host (ALSA on Linux).
+    fn choose_host() -> Host {
+        #[cfg(target_os = "linux")]
+        {
+            let available = cpal::available_hosts();
+            if available.contains(&cpal::HostId::Jack) {
+                match cpal::host_from_id(cpal::HostId::Jack) {
+                    Ok(host) => {
+                        println!("Using JACK audio backend");
+                        return host;
+                    }
+                    Err(_) => {
+                        println!(
+                            "JACK host unavailable, falling back to default audio backend"
+                        );
+                    }
+                }
+            }
+        }
+        cpal::default_host()
+    }
+
     /// Initializes a new realtime synthesizer using the default config and
     /// the default audio output.
     pub fn open_with_all_defaults() -> Self {
-        let host = cpal::default_host();
+        let host = Self::choose_host();
 
         let device = host
             .default_output_device()
@@ -114,7 +140,7 @@ impl RealtimeSynth {
     ///
     /// See the `XSynthRealtimeConfig` documentation for the available options.
     pub fn open_with_default_output(config: XSynthRealtimeConfig) -> Self {
-        let host = cpal::default_host();
+        let host = Self::choose_host();
 
         let device = host
             .default_output_device()
