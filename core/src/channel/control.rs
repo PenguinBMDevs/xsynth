@@ -304,7 +304,7 @@ impl VoiceChannel {
                     .set_end(value.clamp(0.0, 1.0));
             }
             ControlEvent::Cutoff(value) => {
-                self.control_event_data.cutoff = value.max(1.0);
+                self.control_event_data.cutoff = value;
                 self.control_event_data.cutoff_active = true;
             }
             ControlEvent::Resonance(value) => {
