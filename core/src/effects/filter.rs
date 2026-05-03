@@ -52,7 +52,7 @@ impl BiQuadFilter {
     }
 
     pub fn set_coefficients(&mut self, coeffs: Coefficients<f32>) {
-        self.filter.replace_coefficients(coeffs);
+        self.filter = DirectForm1::<f32>::new(coeffs);
     }
 
     pub fn process(&mut self, input: f32) -> f32 {
