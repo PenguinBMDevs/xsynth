@@ -320,33 +320,38 @@ impl VoiceChannel {
                 self.control_event_data.highpass_resonance_active = true;
             }
             ControlEvent::DelayTime(value) => {
-                self.voice_control_data.envelope.delay = Some(value.max(0.0));
+                self.voice_control_data.envelope.delay =
+                    if value < 0.0 { None } else { Some(value) };
                 self.voice_control_data.cc_envelope.delay = None;
                 self.propagate_voice_controls();
             }
             ControlEvent::AttackTime(value) => {
-                self.voice_control_data.envelope.attack = Some(value.max(0.0));
+                self.voice_control_data.envelope.attack =
+                    if value < 0.0 { None } else { Some(value) };
                 self.voice_control_data.cc_envelope.attack = None;
                 self.propagate_voice_controls();
             }
             ControlEvent::HoldTime(value) => {
-                self.voice_control_data.envelope.hold = Some(value.max(0.0));
+                self.voice_control_data.envelope.hold =
+                    if value < 0.0 { None } else { Some(value) };
                 self.voice_control_data.cc_envelope.hold = None;
                 self.propagate_voice_controls();
             }
             ControlEvent::DecayTime(value) => {
-                self.voice_control_data.envelope.decay = Some(value.max(0.0));
+                self.voice_control_data.envelope.decay =
+                    if value < 0.0 { None } else { Some(value) };
                 self.voice_control_data.cc_envelope.decay = None;
                 self.propagate_voice_controls();
             }
             ControlEvent::SustainLevel(value) => {
                 self.voice_control_data.envelope.sustain_percent =
-                    Some(value.clamp(0.0, 1.0));
+                    if value < 0.0 { None } else { Some(value.clamp(0.0, 1.0)) };
                 self.voice_control_data.cc_envelope.sustain_percent = None;
                 self.propagate_voice_controls();
             }
             ControlEvent::ReleaseTime(value) => {
-                self.voice_control_data.envelope.release = Some(value.max(0.0));
+                self.voice_control_data.envelope.release =
+                    if value < 0.0 { None } else { Some(value) };
                 self.voice_control_data.cc_envelope.release = None;
                 self.propagate_voice_controls();
             }
