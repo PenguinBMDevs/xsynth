@@ -143,10 +143,10 @@ impl MultiChannelBiQuad {
                     last_v = Some(safe_freq);
                 }
             }
-            *s = self.channels[i % channel_count].process(*s);
             if matches!(self.fil_type, FilterType::LowPass) && current_v < 20.0 {
                 *s *= current_v / 20.0;
             }
+            *s = self.channels[i % channel_count].process(*s);
         }
     }
 }
