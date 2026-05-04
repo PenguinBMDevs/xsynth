@@ -99,6 +99,11 @@ impl RealtimeSynth {
     /// On Linux, if cpal was compiled with the `jack` feature and a JACK daemon
     /// is running, this returns the JACK host. Otherwise falls back to the
     /// platform default host (ALSA on Linux).
+    ///
+    /// We verify the host by attempting to get a default output device:
+    /// `host_from_id()` may succeed even when jackd is not running, because
+    /// the JACK library can be loaded without an active server connection.
+    /// Only a subsequent `default_output_device()` call reveals the runtime failure.
     fn choose_host() -> Host {
         #[cfg(target_os = "linux")]
         {
@@ -106,8 +111,16 @@ impl RealtimeSynth {
             if available.contains(&cpal::HostId::Jack) {
                 match cpal::host_from_id(cpal::HostId::Jack) {
                     Ok(host) => {
-                        println!("Using JACK audio backend");
-                        return host;
+                        // Verify JACK is actually usable — host_from_id can succeed
+                        // even when jackd is not running (library loaded, no server).
+                        if host.default_output_device().is_some() {
+                            println!("Using JACK audio backend");
+                            return host;
+                        }
+                        println!(
+                            "JACK host found but no output device (jackd not running?), \
+                             falling back to default audio backend"
+                        );
                     }
                     Err(_) => {
                         println!(
