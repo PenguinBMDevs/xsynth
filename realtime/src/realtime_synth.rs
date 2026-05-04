@@ -104,30 +104,52 @@ impl RealtimeSynth {
     /// `host_from_id()` may succeed even when jackd is not running, because
     /// the JACK library can be loaded without an active server connection.
     /// Only a subsequent `default_output_device()` call reveals the runtime failure.
+    ///
+    /// Override via `XSYNTH_AUDIO_BACKEND=alsa` environment variable to force ALSA
+    /// when JACK causes issues (e.g. port connection failures).
     fn choose_host() -> Host {
         #[cfg(target_os = "linux")]
         {
+            // Allow env override to skip JACK detection entirely
+            if std::env::var("XSYNTH_AUDIO_BACKEND")
+                .map(|v| v.eq_ignore_ascii_case("alsa"))
+                .unwrap_or(false)
+            {
+                println!("XSYNTH_AUDIO_BACKEND=alsa, skipping JACK detection");
+                return cpal::default_host();
+            }
+
             let available = cpal::available_hosts();
             if available.contains(&cpal::HostId::Jack) {
                 match cpal::host_from_id(cpal::HostId::Jack) {
                     Ok(host) => {
                         // Verify JACK is actually usable — host_from_id can succeed
                         // even when jackd is not running (library loaded, no server).
-                        if host.default_output_device().is_some() {
-                            println!("Using JACK audio backend");
+                        if let Some(device) = host.default_output_device() {
+                            if let Ok(name) = device.name() {
+                                println!(
+                                    "Using JACK audio backend (device: {})",
+                                    name
+                                );
+                            } else {
+                                println!("Using JACK audio backend");
+                            }
                             return host;
                         }
-                        println!(
-                            "JACK host found but no output device (jackd not running?), \
-                             falling back to default audio backend"
+                        eprintln!(
+                            "WARNING: JACK host found but no output device (jackd not running?), \
+                             falling back to ALSA"
                         );
                     }
-                    Err(_) => {
-                        println!(
-                            "JACK host unavailable, falling back to default audio backend"
+                    Err(e) => {
+                        eprintln!(
+                            "WARNING: JACK host unavailable ({}), falling back to ALSA",
+                            e
                         );
                     }
                 }
+            } else {
+                println!("JACK not available, using default audio backend (ALSA)");
             }
         }
         cpal::default_host()
@@ -284,7 +306,26 @@ impl RealtimeSynth {
             stream_config: SupportedStreamConfig,
             buffered: Arc<std::sync::Mutex<BufferedRenderer>>,
         ) -> Stream {
-            let err_fn = |err| eprintln!("an error occurred on stream: {err}");
+            let err_fn = |err: cpal::StreamError| {
+                match &err {
+                    // BackendSpecificError from JACK buffer_size changes are benign.
+                    // JACK may change buffer size at runtime (e.g. 1024 frames),
+                    // and the cpal JACK backend reallocates temp buffers correctly.
+                    cpal::StreamError::BackendSpecific { .. } => {
+                        // Decode the description to filter buffer-size notifications
+                        let desc = format!("{err}");
+                        if desc.contains("buffer size changed") {
+                            // Benign JACK notification — don't alarm the user
+                            eprintln!("[xsynth] audio buffer size changed: {}", desc);
+                        } else {
+                            eprintln!("[xsynth] audio backend error: {err}");
+                        }
+                    }
+                    _ => {
+                        eprintln!("[xsynth] audio stream error: {err}");
+                    }
+                }
+            };
             let mut output_vec = Vec::new();
 
             let mut limiter = VolumeLimiter::new(stream_config.channels());
