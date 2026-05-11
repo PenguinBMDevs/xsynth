@@ -200,9 +200,8 @@ impl VoiceBuffer {
             }
         }
 
-        if !self.held_by_damper.is_empty() {
-            self.held_by_damper.clear();
-        }
+        let voice_ids: FxHashSet<usize> = self.voices.iter().map(|v| v.id).collect();
+        self.held_by_damper.retain(|id| voice_ids.contains(id));
     }
 
     #[inline(always)]
