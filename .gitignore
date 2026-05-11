@@ -8,3 +8,4 @@ shell.nix
 xsynth.h
 a.out
 test*
+.DS_Store
