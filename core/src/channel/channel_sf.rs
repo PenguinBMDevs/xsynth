@@ -23,7 +23,7 @@ pub struct ChannelSoundfont {
 impl Deref for ChannelSoundfont {
     type Target = VoiceSpawnerMatrix;
 
-    #[inline]
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
         &self.matrix
     }

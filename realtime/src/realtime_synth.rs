@@ -1,15 +1,17 @@
 use std::{
+    collections::VecDeque,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
-    }
+    },
+    thread::{self},
 };
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    Device, PauseStreamError, PlayStreamError, SizedSample, Stream, SupportedStreamConfig,
+    Device, Host, PauseStreamError, PlayStreamError, SizedSample, Stream, SupportedStreamConfig,
 };
-use crossbeam_channel::unbounded;
+use crossbeam_channel::{bounded, unbounded};
 
 #[cfg(feature = "pipewire")]
 fn select_host() -> cpal::Host {
@@ -40,9 +42,7 @@ use xsynth_core::{
     AudioPipe, AudioStreamParams, FunctionAudioPipe,
 };
 
-use crate::{
-    util::ReadWriteAtomicU64, RealtimeEventSender, SynthEvent, ThreadCount, XSynthRealtimeConfig,
-};
+use crate::{RealtimeEventSender, SynthEvent, ThreadCount, XSynthRealtimeConfig};
 
 /// Holds the statistics for an instance of RealtimeSynth.
 #[derive(Debug, Clone)]
@@ -96,6 +96,9 @@ unsafe impl Send for SendSyncStream {}
 
 struct RealtimeSynthThreadSharedData {
     buffered_renderer: Arc<std::sync::Mutex<BufferedRenderer>>,
+    /// Pre-cloned stats reader to avoid locking the Mutex in the audio callback path.
+    /// All fields behind BufferedRendererStats are Arc<Atomic*> — cloning is cheap.
+    buffered_stats: BufferedRendererStatsReader,
     stream: SendSyncStream,
     event_senders: RealtimeEventSender,
 }
@@ -103,6 +106,7 @@ struct RealtimeSynthThreadSharedData {
 /// A realtime MIDI synthesizer using an audio device for output.
 pub struct RealtimeSynth {
     data: Option<RealtimeSynthThreadSharedData>,
+    join_handles: Vec<thread::JoinHandle<()>>,
 
     stats: RealtimeSynthStats,
 
@@ -110,10 +114,71 @@ pub struct RealtimeSynth {
 }
 
 impl RealtimeSynth {
+    /// Selects the audio host, preferring JACK on Linux when available.
+    ///
+    /// On Linux, if cpal was compiled with the `jack` feature and a JACK daemon
+    /// is running, this returns the JACK host. Otherwise falls back to the
+    /// platform default host (ALSA on Linux).
+    ///
+    /// We verify the host by attempting to get a default output device:
+    /// `host_from_id()` may succeed even when jackd is not running, because
+    /// the JACK library can be loaded without an active server connection.
+    /// Only a subsequent `default_output_device()` call reveals the runtime failure.
+    ///
+    /// Override via `XSYNTH_AUDIO_BACKEND=alsa` environment variable to force ALSA
+    /// when JACK causes issues (e.g. port connection failures).
+    fn choose_host() -> Host {
+        #[cfg(target_os = "linux")]
+        {
+            // Allow env override to skip JACK detection entirely
+            if std::env::var("XSYNTH_AUDIO_BACKEND")
+                .map(|v| v.eq_ignore_ascii_case("alsa"))
+                .unwrap_or(false)
+            {
+                println!("XSYNTH_AUDIO_BACKEND=alsa, skipping JACK detection");
+                return cpal::default_host();
+            }
+
+            let available = cpal::available_hosts();
+            if available.contains(&cpal::HostId::Jack) {
+                match cpal::host_from_id(cpal::HostId::Jack) {
+                    Ok(host) => {
+                        // Verify JACK is actually usable — host_from_id can succeed
+                        // even when jackd is not running (library loaded, no server).
+                        if let Some(device) = host.default_output_device() {
+                            if let Ok(name) = device.name() {
+                                println!(
+                                    "Using JACK audio backend (device: {})",
+                                    name
+                                );
+                            } else {
+                                println!("Using JACK audio backend");
+                            }
+                            return host;
+                        }
+                        eprintln!(
+                            "WARNING: JACK host found but no output device (jackd not running?), \
+                             falling back to ALSA"
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "WARNING: JACK host unavailable ({}), falling back to ALSA",
+                            e
+                        );
+                    }
+                }
+            } else {
+                println!("JACK not available, using default audio backend (ALSA)");
+            }
+        }
+        cpal::default_host()
+    }
+
     /// Initializes a new realtime synthesizer using the default config and
     /// the default audio output.
     pub fn open_with_all_defaults() -> Self {
-        let host = select_host();
+        let host = Self::choose_host();
 
         let device = host
             .default_output_device()
@@ -130,7 +195,7 @@ impl RealtimeSynth {
     ///
     /// See the `XSynthRealtimeConfig` documentation for the available options.
     pub fn open_with_default_output(config: XSynthRealtimeConfig) -> Self {
-        let host = select_host();
+        let host = Self::choose_host();
 
         let device = host
             .default_output_device()
@@ -154,6 +219,7 @@ impl RealtimeSynth {
     ) -> Self {
         let mut channel_stats = Vec::new();
         let mut senders = Vec::new();
+        let mut command_senders = Vec::new();
 
         let sample_rate = stream_config.sample_rate().0;
         let stream_params = AudioStreamParams::new(sample_rate, stream_config.channels().into());
@@ -174,20 +240,38 @@ impl RealtimeSynth {
             SynthFormat::Custom { channels } => channels,
         };
 
-        let mut channels = Vec::new();
-        let mut event_receivers = Vec::new();
+        let (output_sender, output_receiver) = bounded::<Vec<f32>>(channel_count as usize);
+
+        let mut thread_handles = vec![];
 
         for _ in 0u32..channel_count {
-            let channel =
+            let mut channel =
                 VoiceChannel::new(config.channel_init_options, stream_params, pool.clone());
             let stats = channel.get_channel_stats();
             channel_stats.push(stats);
 
             let (event_sender, event_receiver) = unbounded();
             senders.push(event_sender);
-            
-            channels.push(channel);
-            event_receivers.push(event_receiver);
+
+            let (command_sender, command_receiver) = bounded::<Vec<f32>>(1);
+            command_senders.push(command_sender);
+
+            let output_sender = output_sender.clone();
+            let join_handle = thread::Builder::new()
+                .name("xsynth_channel_handler".to_string())
+                .spawn(move || loop {
+                    channel.push_events_iter(event_receiver.try_iter());
+                    let mut vec = match command_receiver.recv() {
+                        Ok(vec) => vec,
+                        Err(_) => break,
+                    };
+                    channel.push_events_iter(event_receiver.try_iter());
+                    channel.read_samples(&mut vec);
+                    output_sender.send(vec).unwrap();
+                })
+                .unwrap();
+
+            thread_handles.push(join_handle);
         }
 
         if config.format == SynthFormat::Midi {
@@ -198,9 +282,9 @@ impl RealtimeSynth {
                 .unwrap();
         }
 
-        let mut vec_cache: Vec<Vec<f32>> = Vec::new();
+        let mut vec_cache: VecDeque<Vec<f32>> = VecDeque::new();
         for _ in 0..channel_count {
-            vec_cache.push(Vec::new());
+            vec_cache.push_front(Vec::new());
         }
 
         let stats = RealtimeSynthStats::new();
@@ -208,51 +292,60 @@ impl RealtimeSynth {
         let total_voice_count = stats.voice_count.clone();
 
         let render = FunctionAudioPipe::new(stream_params, move |out| {
-            if let Some(pool) = &pool {
-                use rayon::prelude::*;
-                pool.install(|| {
-                    channels
-                        .par_iter_mut()
-                        .zip(event_receivers.par_iter())
-                        .zip(vec_cache.par_iter_mut())
-                        .for_each(|((channel, event_receiver), buf)| {
-                            channel.push_events_iter(event_receiver.try_iter());
-                            fast_zero_fill(buf, out.len());
-                            channel.read_samples(buf);
-                        });
-                });
-            } else {
-                for ((channel, event_receiver), buf) in channels
-                    .iter_mut()
-                    .zip(event_receivers.iter())
-                    .zip(vec_cache.iter_mut())
-                {
-                    channel.push_events_iter(event_receiver.try_iter());
-                    fast_zero_fill(buf, out.len());
-                    channel.read_samples(buf);
-                }
+            // Dispatch phase: send pre-zeroed buffers to each channel thread
+            for sender in command_senders.iter() {
+                let mut buf = vec_cache.pop_front().unwrap();
+                fast_zero_fill(&mut buf, out.len());
+                sender.send(buf).unwrap();
             }
 
-            for buf in vec_cache.iter() {
-                sum_simd(buf, out);
+            // Collect phase: receive rendered buffers and sum into output
+            for _ in 0..channel_count {
+                let buf = output_receiver.recv().unwrap();
+                sum_simd(&buf, out);
+                vec_cache.push_front(buf);
             }
 
             let total_voices = channel_stats.iter().map(|c| c.voice_count()).sum();
             total_voice_count.store(total_voices, Ordering::Relaxed);
         });
 
-        let buffered = Arc::new(std::sync::Mutex::new(BufferedRenderer::new(
+        let buffered_renderer = BufferedRenderer::new(
             render,
             stream_params,
             calculate_render_size(sample_rate, config.render_window_ms),
-        )));
+        );
+        // Pre-clone stats reader before wrapping in Mutex.
+        // This allows get_stats() to read stats without locking, avoiding
+        // priority inversion in the audio callback path.
+        let buffered_stats = buffered_renderer.get_buffer_stats();
+        let buffered = Arc::new(std::sync::Mutex::new(buffered_renderer));
 
         fn build_stream<T: SizedSample + ConvertSample>(
             device: &Device,
             stream_config: SupportedStreamConfig,
             buffered: Arc<std::sync::Mutex<BufferedRenderer>>,
         ) -> Stream {
-            let err_fn = |err| eprintln!("an error occurred on stream: {err}");
+            let err_fn = |err: cpal::StreamError| {
+                match &err {
+                    // BackendSpecificError from JACK buffer_size changes are benign.
+                    // JACK may change buffer size at runtime (e.g. 1024 frames),
+                    // and the cpal JACK backend reallocates temp buffers correctly.
+                    cpal::StreamError::BackendSpecific { .. } => {
+                        // Decode the description to filter buffer-size notifications
+                        let desc = format!("{err}");
+                        if desc.contains("buffer size changed") {
+                            // Benign JACK notification — don't alarm the user
+                            eprintln!("[xsynth] audio buffer size changed: {}", desc);
+                        } else {
+                            eprintln!("[xsynth] audio backend error: {err}");
+                        }
+                    }
+                    _ => {
+                        eprintln!("[xsynth] audio stream error: {err}");
+                    }
+                }
+            };
             let mut output_vec = Vec::new();
 
             let mut limiter = VolumeLimiter::new(stream_config.channels());
@@ -282,16 +375,16 @@ impl RealtimeSynth {
 
         stream.play().unwrap();
 
-        let max_nps = Arc::new(ReadWriteAtomicU64::new(10000));
+        let max_nps = Arc::new(AtomicU64::new(10000));
 
         Self {
             data: Some(RealtimeSynthThreadSharedData {
                 buffered_renderer: buffered,
-
+                buffered_stats,
                 event_senders: RealtimeEventSender::new(senders, max_nps, config.ignore_range),
                 stream: SendSyncStream(stream),
             }),
-
+            join_handles: thread_handles,
             stats,
             stream_params,
         }
@@ -338,9 +431,10 @@ impl RealtimeSynth {
     /// on how to use.
     pub fn get_stats(&self) -> RealtimeSynthStatsReader {
         let data = self.data.as_ref().unwrap();
-        let buffered_stats = data.buffered_renderer.lock().unwrap().get_buffer_stats();
-
-        RealtimeSynthStatsReader::new(self.stats.clone(), buffered_stats)
+        // Uses pre-cloned stats reader — no Mutex lock needed.
+        // This avoids priority inversion where the audio callback (which holds
+        // the BufferedRenderer lock via read()) would be blocked.
+        RealtimeSynthStatsReader::new(self.stats.clone(), data.buffered_stats.clone())
     }
 
     /// Returns the stream parameters of the audio output device.
@@ -373,6 +467,9 @@ impl Drop for RealtimeSynth {
     fn drop(&mut self) {
         let data = self.data.take().unwrap();
         drop(data);
+        for handle in self.join_handles.drain(..) {
+            handle.join().unwrap();
+        }
     }
 }
 

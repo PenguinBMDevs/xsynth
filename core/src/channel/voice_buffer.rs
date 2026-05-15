@@ -10,7 +10,7 @@ pub struct GroupVoice {
 }
 
 impl GroupVoice {
-    #[inline]
+    #[inline(always)]
     pub fn ended(&self) -> bool {
         self.voice.ended()
     }
@@ -19,14 +19,14 @@ impl GroupVoice {
 impl Deref for GroupVoice {
     type Target = Box<dyn Voice>;
 
-    #[inline]
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
         &self.voice
     }
 }
 
 impl DerefMut for GroupVoice {
-    #[inline]
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Box<dyn Voice> {
         &mut self.voice
     }
@@ -57,7 +57,7 @@ impl VoiceBuffer {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn get_id(&mut self) -> usize {
         self.id_counter += 1;
         self.id_counter
@@ -119,7 +119,7 @@ impl VoiceBuffer {
         self.held_by_damper.clear();
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn push_voices(&mut self, voices: impl Iterator<Item = Box<dyn Voice>>) {
         let id = self.get_id();
 
@@ -187,7 +187,10 @@ impl VoiceBuffer {
 
     /// Batch remove ended voices using swap_remove for efficiency
     /// swap_remove is O(1) per removal but changes order
-    #[inline]
+    /// Note: New code should prefer render_and_compact() which combines
+    /// removal + rendering in a single cache-friendly pass.
+    #[allow(dead_code)]
+    #[inline(always)]
     pub fn remove_ended_voices(&mut self) {
         // Use swap_remove for O(1) per-element removal
         // This is faster than retain when removing many elements
@@ -208,23 +211,24 @@ impl VoiceBuffer {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn iter_voices_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn Voice>> {
         self.voices.iter_mut().map(|group| &mut group.voice)
     }
 
     /// Get mutable access to voices for parallel processing
-    #[inline]
+    #[allow(dead_code)]
+    #[inline(always)]
     pub fn get_voices_mut(&mut self) -> &mut [GroupVoice] {
         &mut self.voices
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn has_voices(&self) -> bool {
         !self.voices.is_empty()
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn voice_count(&self) -> usize {
         self.voices.len()
     }
@@ -242,7 +246,6 @@ impl VoiceBuffer {
     }
 
     /// Set the maximum number of voices per key. None means no limit.
-    #[allow(dead_code)]
     pub fn set_max_voices(&mut self, max: Option<usize>) {
         self.max_voices = max;
     }

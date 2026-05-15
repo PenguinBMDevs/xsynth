@@ -1,0 +1,5 @@
+# Enable CPU-specific optimizations for release builds.
+# This allows the compiler to use instructions like FMA, AVX2, BMI2, etc.
+# Note: resulting binary will only run on CPUs compatible with the build machine.
+[target.'cfg(all())']
+rustflags = ["-C", "target-cpu=native"]

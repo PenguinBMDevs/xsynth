@@ -154,18 +154,18 @@ where
     V2: SIMDVoiceGenerator<T, TO>,
     F: Sync + Send + Fn(TI, TO) -> TO,
 {
-    #[inline]
+    #[inline(always)]
     fn ended(&self) -> bool {
         self.v1.ended() || self.v2.ended()
     }
 
-    #[inline]
+    #[inline(always)]
     fn signal_release(&mut self, rel_type: ReleaseType) {
         self.v1.signal_release(rel_type);
         self.v2.signal_release(rel_type);
     }
 
-    #[inline]
+    #[inline(always)]
     fn process_controls(&mut self, control: &VoiceControlData) {
         self.v1.process_controls(control);
         self.v2.process_controls(control);
@@ -181,7 +181,7 @@ where
     V2: SIMDVoiceGenerator<T, TO>,
     F: Sync + Send + Fn(TI, TO) -> TO,
 {
-    #[inline]
+    #[inline(always)]
     fn next_sample(&mut self) -> TO {
         simd_invoke!(T, {
             (self.func)(self.v1.next_sample(), self.v2.next_sample())
@@ -200,7 +200,7 @@ impl<T: Simd> VoiceCombineSIMD<T> {
         V1: SIMDVoiceGenerator<T, TI>,
         V2: SIMDVoiceGenerator<T, TO>,
     {
-        #[inline]
+        #[inline(always)]
         fn mult<T, TI, TO>(a: TI, b: TO) -> TO
         where
             T: Simd,
@@ -220,7 +220,7 @@ impl<T: Simd> VoiceCombineSIMD<T> {
         V1: SIMDVoiceGenerator<T, TI>,
         V2: SIMDVoiceGenerator<T, TO>,
     {
-        #[inline]
+        #[inline(always)]
         fn add<T, TI, TO>(a: TI, b: TO) -> TO
         where
             T: Simd,

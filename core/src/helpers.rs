@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::cell::RefCell;
+use std::sync::Arc;
 
 mod frequencies;
 pub use frequencies::*;
@@ -47,7 +47,9 @@ pub fn get_render_buffer(size: usize) -> Vec<f32> {
             if buf.capacity() < size {
                 buf.reserve(size - buf.capacity());
             }
-            unsafe { buf.set_len(size); }
+            unsafe {
+                buf.set_len(size);
+            }
             buf.fill(0.0);
             buf
         } else {
@@ -69,13 +71,11 @@ pub fn return_render_buffer(buf: Vec<f32>) {
 }
 
 /// Ultra-fast SIMD sum of multiple buffers into target
-/// Uses unsafe code to eliminate bounds checking
-#[inline]
+/// Uses SIMD-optimized sum_simd for each buffer
+#[inline(always)]
 pub fn sum_buffers_to_target(sources: &[Vec<f32>], target: &mut [f32]) {
     for source in sources {
-        for (dst, src) in target.iter_mut().zip(source.iter()) {
-            *dst += *src;
-        }
+        sum_simd(source, target);
     }
 }
 

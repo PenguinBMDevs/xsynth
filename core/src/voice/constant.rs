@@ -19,20 +19,20 @@ impl<S: Simd> SIMDConstant<S> {
 }
 
 impl<S: Simd> VoiceGeneratorBase for SIMDConstant<S> {
-    #[inline]
+    #[inline(always)]
     fn ended(&self) -> bool {
         false
     }
 
-    #[inline]
+    #[inline(always)]
     fn signal_release(&mut self, _rel_type: ReleaseType) {}
 
-    #[inline]
+    #[inline(always)]
     fn process_controls(&mut self, _control: &VoiceControlData) {}
 }
 
 impl<S: Simd> SIMDVoiceGenerator<S, SIMDSampleMono<S>> for SIMDConstant<S> {
-    #[inline]
+    #[inline(always)]
     fn next_sample(&mut self) -> SIMDSampleMono<S> {
         SIMDSampleMono(self.values)
     }
@@ -55,20 +55,20 @@ impl<S: Simd> SIMDConstantStereo<S> {
 }
 
 impl<S: Simd> VoiceGeneratorBase for SIMDConstantStereo<S> {
-    #[inline]
+    #[inline(always)]
     fn ended(&self) -> bool {
         false
     }
 
-    #[inline]
+    #[inline(always)]
     fn signal_release(&mut self, _rel_type: ReleaseType) {}
 
-    #[inline]
+    #[inline(always)]
     fn process_controls(&mut self, _control: &VoiceControlData) {}
 }
 
 impl<S: Simd> SIMDVoiceGenerator<S, SIMDSampleStereo<S>> for SIMDConstantStereo<S> {
-    #[inline]
+    #[inline(always)]
     fn next_sample(&mut self) -> SIMDSampleStereo<S> {
         SIMDSampleStereo(self.values_left, self.values_right)
     }

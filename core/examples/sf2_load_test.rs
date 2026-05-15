@@ -81,8 +81,7 @@ fn main() {
     // --- Phase 4: Parse-only test ---
     println!("--- Test 3: Parse only (xsynth-soundfonts layer) ---");
     let start = Instant::now();
-    let parse_result =
-        xsynth_soundfonts::sf2::load_soundfont(sf2_path, stream_params.sample_rate);
+    let parse_result = xsynth_soundfonts::sf2::load_soundfont(sf2_path, stream_params.sample_rate);
     let parse_time = start.elapsed();
     println!("Parse time: {:.3}s", parse_time.as_secs_f64());
 
@@ -110,7 +109,9 @@ fn main() {
     println!();
 
     // File size for memory limit calculation (1.5x original file size)
-    let file_size_mb = std::fs::metadata(sf2_path).map(|m| m.len() as f64 / (1024.0 * 1024.0)).unwrap_or(0.0);
+    let file_size_mb = std::fs::metadata(sf2_path)
+        .map(|m| m.len() as f64 / (1024.0 * 1024.0))
+        .unwrap_or(0.0);
     let mem_limit_mb = file_size_mb * 1.5;
     let time_limit_s = 0.5;
 
@@ -150,7 +151,6 @@ fn main() {
 #[cfg(target_os = "windows")]
 fn get_process_memory_mb() -> f64 {
     use std::mem;
-    
 
     #[repr(C)]
     struct ProcessMemoryCounters {

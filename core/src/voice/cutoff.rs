@@ -38,17 +38,17 @@ where
     S: Simd,
     V: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
 {
-    #[inline]
+    #[inline(always)]
     fn ended(&self) -> bool {
         self.v.ended()
     }
 
-    #[inline]
+    #[inline(always)]
     fn signal_release(&mut self, rel_type: ReleaseType) {
         self.v.signal_release(rel_type);
     }
 
-    #[inline]
+    #[inline(always)]
     fn process_controls(&mut self, control: &VoiceControlData) {
         self.v.process_controls(control);
     }
@@ -59,13 +59,11 @@ where
     S: Simd,
     V: SIMDVoiceGenerator<S, SIMDSampleMono<S>>,
 {
-    #[inline]
+    #[inline(always)]
     fn next_sample(&mut self) -> SIMDSampleMono<S> {
         simd_invoke!(S, {
             let mut next_sample = self.v.next_sample();
-            for i in 0..S::Vf32::WIDTH {
-                next_sample.0[i] = self.cutoff.process(next_sample.0[i]);
-            }
+            next_sample.0 = self.cutoff.process_simd::<S>(next_sample.0);
             next_sample
         })
     }
@@ -102,17 +100,17 @@ where
     S: Simd,
     V: SIMDVoiceGenerator<S, SIMDSampleStereo<S>>,
 {
-    #[inline]
+    #[inline(always)]
     fn ended(&self) -> bool {
         self.v.ended()
     }
 
-    #[inline]
+    #[inline(always)]
     fn signal_release(&mut self, rel_type: ReleaseType) {
         self.v.signal_release(rel_type);
     }
 
-    #[inline]
+    #[inline(always)]
     fn process_controls(&mut self, control: &VoiceControlData) {
         self.v.process_controls(control);
     }
@@ -123,14 +121,12 @@ where
     S: Simd,
     V: SIMDVoiceGenerator<S, SIMDSampleStereo<S>>,
 {
-    #[inline]
+    #[inline(always)]
     fn next_sample(&mut self) -> SIMDSampleStereo<S> {
         simd_invoke!(S, {
             let mut next_sample = self.v.next_sample();
-            for i in 0..S::Vf32::WIDTH {
-                next_sample.0[i] = self.cutoff1.process(next_sample.0[i]);
-                next_sample.1[i] = self.cutoff2.process(next_sample.1[i]);
-            }
+            next_sample.0 = self.cutoff1.process_simd::<S>(next_sample.0);
+            next_sample.1 = self.cutoff2.process_simd::<S>(next_sample.1);
             next_sample
         })
     }
