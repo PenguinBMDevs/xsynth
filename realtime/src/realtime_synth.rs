@@ -11,6 +11,26 @@ use cpal::{
 };
 use crossbeam_channel::unbounded;
 
+#[cfg(feature = "pipewire")]
+fn select_host() -> cpal::Host {
+    match cpal::host_from_id(cpal::HostId::Jack) {
+        Ok(host) => {
+            println!("Audio host: PipeWire (via JACK API)");
+            host
+        }
+        Err(_) => {
+            let host = cpal::default_host();
+            println!("Audio host: ALSA (via PipeWire ALSA compatibility)");
+            host
+        }
+    }
+}
+
+#[cfg(not(feature = "pipewire"))]
+fn select_host() -> cpal::Host {
+    cpal::default_host()
+}
+
 use xsynth_core::{
     buffered_renderer::{BufferedRenderer, BufferedRendererStatsReader},
     channel::{ChannelConfigEvent, ChannelEvent, VoiceChannel},
@@ -93,7 +113,7 @@ impl RealtimeSynth {
     /// Initializes a new realtime synthesizer using the default config and
     /// the default audio output.
     pub fn open_with_all_defaults() -> Self {
-        let host = cpal::default_host();
+        let host = select_host();
 
         let device = host
             .default_output_device()
@@ -110,7 +130,7 @@ impl RealtimeSynth {
     ///
     /// See the `XSynthRealtimeConfig` documentation for the available options.
     pub fn open_with_default_output(config: XSynthRealtimeConfig) -> Self {
-        let host = cpal::default_host();
+        let host = select_host();
 
         let device = host
             .default_output_device()
