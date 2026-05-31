@@ -1,5 +1,5 @@
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::AtomicU64,
     Arc,
 };
 
@@ -11,8 +11,9 @@ use super::{
 pub struct KeyData {
     key: u8,
     voices: VoiceBuffer,
-    last_voice_count: usize,
-    shared_voice_counter: Arc<AtomicU64>,
+    /// Shared counter used to pass to VoiceBuffer for global voice tracking.
+    /// Only used at construction time; VoiceBuffer manages the counter internally.
+    _shared_voice_counter: Arc<AtomicU64>,
 }
 
 impl KeyData {
@@ -23,9 +24,8 @@ impl KeyData {
     ) -> KeyData {
         KeyData {
             key,
-            voices: VoiceBuffer::new(options),
-            last_voice_count: 0,
-            shared_voice_counter,
+            voices: VoiceBuffer::new(options, shared_voice_counter.clone()),
+            _shared_voice_counter: shared_voice_counter,
         }
     }
 
@@ -69,8 +69,8 @@ impl KeyData {
 
     /// Ultra-optimized sequential rendering
     /// Each voice adds directly to the output buffer.
-    /// Uses 3-pass approach: pre-remove ended → render → post-remove ended.
-    /// Benchmark-proven fastest for the unlimited-layers workload.
+    /// Uses 2-pass approach: pre-remove ended → render → post-remove ended.
+    /// Global voice counter is managed by VoiceBuffer operations internally.
     #[inline(always)]
     pub fn render_to(&mut self, out: &mut [f32]) {
         // Pre-remove voices that already ended on the previous frame.
@@ -79,7 +79,6 @@ impl KeyData {
 
         let voice_count = self.voices.voice_count();
         if voice_count == 0 {
-            self.update_voice_counter(0);
             return;
         }
 
@@ -91,20 +90,6 @@ impl KeyData {
 
         // Remove any voices that finished during this render call
         self.voices.remove_ended_voices();
-        self.update_voice_counter(self.voices.voice_count());
-    }
-
-    #[inline(always)]
-    fn update_voice_counter(&mut self, new_count: usize) {
-        let change = new_count as i64 - self.last_voice_count as i64;
-        if change < 0 {
-            self.shared_voice_counter
-                .fetch_sub((-change) as u64, Ordering::Relaxed);
-        } else if change > 0 {
-            self.shared_voice_counter
-                .fetch_add(change as u64, Ordering::Relaxed);
-        }
-        self.last_voice_count = new_count;
     }
 
     #[inline(always)]

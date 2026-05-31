@@ -136,6 +136,13 @@ pub struct ChannelInitOptions {
     /// Maximum simultaneous sounding notes per key.
     /// Default: `Some(4)`
     pub max_voices_per_key: Option<usize>,
+
+    /// Maximum voices allowed globally across all keys in a channel.
+    /// When exceeded, new NoteOn voices are silently dropped.
+    /// This prevents OOM in extreme scenarios like black MIDI.
+    /// None means no global limit.
+    /// Default: `Some(4096)`
+    pub global_voice_limit: Option<usize>,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -144,6 +151,7 @@ impl Default for ChannelInitOptions {
         Self {
             fade_out_killing: false,
             max_voices_per_key: Some(4),
+            global_voice_limit: Some(4096),
         }
     }
 }

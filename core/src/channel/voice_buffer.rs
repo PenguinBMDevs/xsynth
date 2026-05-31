@@ -2,6 +2,8 @@ use super::ChannelInitOptions;
 use crate::voice::{ReleaseType, Voice};
 use rustc_hash::FxHashSet;
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// A voice with its group ID for tracking
 pub struct GroupVoice {
@@ -41,19 +43,31 @@ pub struct VoiceBuffer {
     damper_held: bool,
     held_by_damper: FxHashSet<usize>,
     pub max_voices: Option<usize>,
+    /// Shared counter tracking total voices across all keys in the channel.
+    /// Used to enforce the global voice limit.
+    global_voice_counter: Arc<AtomicU64>,
+    /// Maximum voices allowed globally across all keys in the channel.
+    /// None means no limit.
+    global_voice_limit: Option<usize>,
 }
 
 impl VoiceBuffer {
-    pub fn new(options: ChannelInitOptions) -> Self {
+    pub fn new(
+        options: ChannelInitOptions,
+        global_voice_counter: Arc<AtomicU64>,
+    ) -> Self {
         let max_voices = options.max_voices_per_key;
+        let pre_alloc = max_voices.map_or(16, |m| m.min(64));
         VoiceBuffer {
             options,
             id_counter: 0,
-            // Pre-allocate for high voice count scenarios
-            voices: Vec::with_capacity(256),
+            // Conservative pre-allocation based on max_voices to avoid excessive memory usage
+            voices: Vec::with_capacity(pre_alloc),
             damper_held: false,
             held_by_damper: FxHashSet::default(),
             max_voices,
+            global_voice_counter,
+            global_voice_limit: options.global_voice_limit,
         }
     }
 
@@ -71,8 +85,9 @@ impl VoiceBuffer {
 
         let mut quietest_vel = u8::MAX;
         let mut quietest_id = None;
+        let mut quietest_idx = None;
 
-        for voice in &self.voices {
+        for (idx, voice) in self.voices.iter().enumerate() {
             if voice.id == ignored_id || voice.is_killed() {
                 continue;
             }
@@ -80,6 +95,7 @@ impl VoiceBuffer {
             if vel < quietest_vel {
                 quietest_vel = vel;
                 quietest_id = Some(voice.id);
+                quietest_idx = Some(idx);
                 if vel == 0 {
                     break;
                 }
@@ -94,13 +110,10 @@ impl VoiceBuffer {
                     }
                 }
             } else {
-                let mut i = 0;
-                while i < self.voices.len() {
-                    if self.voices[i].id == id {
-                        self.voices.swap_remove(i);
-                    } else {
-                        i += 1;
-                    }
+                if let Some(idx) = quietest_idx {
+                    self.voices.swap_remove(idx);
+                    self.global_voice_counter
+                        .fetch_sub(1, Ordering::Relaxed);
                 }
             }
 
@@ -114,7 +127,12 @@ impl VoiceBuffer {
                 voice.signal_release(ReleaseType::Kill);
             }
         } else {
+            let count = self.voices.len();
             self.voices.clear();
+            if count > 0 {
+                self.global_voice_counter
+                    .fetch_sub(count as u64, Ordering::Relaxed);
+            }
         }
         self.held_by_damper.clear();
     }
@@ -122,9 +140,23 @@ impl VoiceBuffer {
     #[inline(always)]
     pub fn push_voices(&mut self, voices: impl Iterator<Item = Box<dyn Voice>>) {
         let id = self.get_id();
+        let mut pushed = 0usize;
 
         for voice in voices {
+            // Check global voice limit before pushing each voice
+            if let Some(limit) = self.global_voice_limit {
+                if self.global_voice_counter.load(Ordering::Relaxed) as usize >= limit {
+                    break;
+                }
+            }
             self.voices.push(GroupVoice { id, voice });
+            pushed += 1;
+        }
+
+        // Update global counter with newly pushed voices
+        if pushed > 0 {
+            self.global_voice_counter
+                .fetch_add(pushed as u64, Ordering::Relaxed);
         }
 
         if let Some(max_voices) = self.max_voices {
@@ -185,29 +217,30 @@ impl VoiceBuffer {
         }
     }
 
-    /// Batch remove ended voices using swap_remove for efficiency
-    /// swap_remove is O(1) per removal but changes order
-    /// Note: New code should prefer render_and_compact() which combines
-    /// removal + rendering in a single cache-friendly pass.
-    #[allow(dead_code)]
+    /// Batch remove ended voices using swap_remove for efficiency.
+    /// Also properly cleans up held_by_damper entries to avoid
+    /// voice management corruption (was: clearing all entries blindly).
     #[inline(always)]
     pub fn remove_ended_voices(&mut self) {
         // Use swap_remove for O(1) per-element removal
-        // This is faster than retain when removing many elements
+        let mut removed = 0usize;
         let mut i = 0;
         while i < self.voices.len() {
             if self.voices[i].ended() {
+                // Clean up damper tracking before removal
+                self.held_by_damper.remove(&self.voices[i].id);
                 self.voices.swap_remove(i);
+                removed += 1;
                 // Don't increment i, check the swapped element
             } else {
                 i += 1;
             }
         }
 
-        // Always clear held_by_damper to avoid O(n*m) complexity
-        // This is the fastest approach for high voice counts
-        if !self.held_by_damper.is_empty() {
-            self.held_by_damper.clear();
+        // Decrement global voice counter for removed voices
+        if removed > 0 {
+            self.global_voice_counter
+                .fetch_sub(removed as u64, Ordering::Relaxed);
         }
     }
 
@@ -243,6 +276,12 @@ impl VoiceBuffer {
             self.held_by_damper.clear();
         }
         self.damper_held = damper;
+    }
+
+    /// Returns the current global voice count for diagnostics.
+    #[allow(dead_code)]
+    pub fn global_voice_count(&self) -> u64 {
+        self.global_voice_counter.load(Ordering::Relaxed)
     }
 
     /// Set the maximum number of voices per key. None means no limit.
