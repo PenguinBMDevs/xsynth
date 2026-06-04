@@ -109,13 +109,18 @@ where
     Config::<T>::new()?.load()
 }
 
-// region: Custom XSynth KDMAPI functions
+// region: KDMAPIv2 Functions
 
-/// This entire function is custom to xsynth and is not part of
-/// the KDMAPI standard. Its basically just for testing.
+// These functions are part of the UNFINISHED v2 spec and are not considered final
 #[no_mangle]
 pub extern "C" fn GetVoiceCount() -> u64 {
     global_state().current_voice_count.load(Ordering::Relaxed)
+}
+
+// TODO: Actually implement this?
+#[no_mangle]
+pub extern "C" fn GetRenderingTime() -> u64 {
+    0 // Unimplemented; Just return 0 for now
 }
 
 // endregion
