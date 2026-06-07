@@ -1,7 +1,4 @@
-use std::sync::{
-    atomic::AtomicU64,
-    Arc,
-};
+use std::sync::{atomic::AtomicU64, Arc};
 
 use super::{
     channel_sf::ChannelSoundfont, event::KeyNoteEvent, voice_buffer::VoiceBuffer,

@@ -3,7 +3,7 @@ use std::{
     collections::VecDeque,
     sync::{
         atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
-        Arc, RwLock,
+        Arc, Condvar, Mutex, RwLock,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -87,6 +87,9 @@ pub struct BufferedRenderer {
     remainder: Vec<f32>,
     /// Whether the render thread should be killed.
     killed: Arc<AtomicBool>,
+    /// Signal from audio callback to render thread: "I consumed data, wake up and produce more."
+    /// Eliminates coarse-grained sleep when the consumer is draining faster than expected.
+    wake_flag: Arc<(Mutex<bool>, Condvar)>,
     /// The thread handle to wait for at the end.
     thread_handle: Option<JoinHandle<()>>,
     stream_params: AudioStreamParams,
@@ -113,6 +116,7 @@ impl BufferedRenderer {
         let last_samples_after_read = Arc::new(AtomicI64::new(0));
         let render_time = Arc::new(RwLock::new(VecDeque::new()));
         let killed = Arc::new(AtomicBool::new(false));
+        let wake_flag = Arc::new((Mutex::new(false), Condvar::new()));
 
         let thread_handle = {
             let samples = samples.clone();
@@ -120,6 +124,7 @@ impl BufferedRenderer {
             let render_size = render_size.clone();
             let render_time = render_time.clone();
             let killed = killed.clone();
+            let wake_flag = wake_flag.clone();
 
             thread::Builder::new()
                 .name("xsynth_buffered_rendering".to_string())
@@ -132,11 +137,20 @@ impl BufferedRenderer {
                         Duration::from_secs(1) * size as u32 / stream_params.sample_rate * 90 / 100;
 
                     // If the render thread is ahead by over ~10%, wait until more samples are required.
+                    // Use Condvar instead of spin_sleep for responsive wake-up: when the audio callback
+                    // consumes data, it signals the Condvar, waking this thread immediately instead of
+                    // waiting for the coarse sleep granularity (delay/10 = 45-90ms).
                     loop {
                         let samples = samples.load(Ordering::Relaxed);
                         let last_requested = last_request_samples.load(Ordering::Relaxed);
                         if samples > last_requested * 110 / 100 {
-                            spin_sleep::sleep(delay / 10);
+                            // Block on Condvar with timeout = delay/10 (coarse upper bound).
+                            // The audio callback signals when it consumes data, waking us early.
+                            let (lock, cvar) = &*wake_flag;
+                            let mut guard = lock.lock().unwrap();
+                            // Reset the flag before waiting
+                            *guard = false;
+                            let _ = cvar.wait_timeout(guard, delay / 10).unwrap();
                         } else {
                             break;
                         }
@@ -201,6 +215,7 @@ impl BufferedRenderer {
             stream_params,
             thread_handle: Some(thread_handle),
             killed,
+            wake_flag,
         }
     }
 
@@ -230,15 +245,17 @@ impl BufferedRenderer {
             let _ = self.return_tx.send(std::mem::take(&mut self.remainder));
         }
 
-        // Read from output queue, leave the remainder if there is any
-        // Use a short timeout to prevent audio callback blocking.
-        // In normal operation the render thread stays ahead so recv succeeds
-        // immediately (no blocking). 5ms = ~half a render cycle at 480 samples.
-        // If exceeded, fill with silence — audible dropout is ~50ms max rather
-        // than hanging the audio callback for 100ms+.
-        let timeout = std::time::Duration::from_millis(5);
+        // Read from output queue — non-blocking.
+        //
+        // `try_recv()` guarantees the audio callback returns in microseconds
+        // regardless of render thread state. The worst case is a single missed
+        // buffer (silence fill) rather than cascading underruns from a blocking
+        // `recv()` or even a 5ms `recv_timeout()`.
+        //
+        // The `while` loop handles the case where one buffer doesn't fill dest
+        // entirely (e.g. dest is 8192 frames but render produces 4410).
         while i < dest.len() {
-            match self.receive.recv_timeout(timeout) {
+            match self.receive.try_recv() {
                 Ok(mut buf) => {
                     let len = buf.len().min(dest.len() - i);
                     for r in buf.drain(0..len) {
@@ -252,11 +269,9 @@ impl BufferedRenderer {
                     }
                 }
                 Err(_) => {
-                    // Timeout - fill remaining with silence to prevent hanging
-                    // This prevents audio dropout by at least providing silence
-                    for j in i..dest.len() {
-                        dest[j] = 0.0;
-                    }
+                    // No data available — dest[i..] is already zeroed (silence).
+                    // This is safe: one missed buffer causes a ~5ms pop, not a
+                    // cascading underrun that hangs the audio callback.
                     break;
                 }
             }
@@ -265,6 +280,12 @@ impl BufferedRenderer {
         self.stats
             .last_samples_after_read
             .store(samples, Ordering::Relaxed);
+
+        // Signal the render thread that we consumed data — it may need to produce more.
+        // This wakes the Condvar in the render loop, eliminating coarse sleep latency.
+        let (lock, cvar) = &*self.wake_flag;
+        *lock.lock().unwrap() = true;
+        cvar.notify_one();
     }
 
     /// Sets the number of samples that should be rendered each iteration.

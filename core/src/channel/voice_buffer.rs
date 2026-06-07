@@ -52,10 +52,7 @@ pub struct VoiceBuffer {
 }
 
 impl VoiceBuffer {
-    pub fn new(
-        options: ChannelInitOptions,
-        global_voice_counter: Arc<AtomicU64>,
-    ) -> Self {
+    pub fn new(options: ChannelInitOptions, global_voice_counter: Arc<AtomicU64>) -> Self {
         let max_voices = options.max_voices_per_key;
         let pre_alloc = max_voices.map_or(16, |m| m.min(64));
         VoiceBuffer {
@@ -112,8 +109,7 @@ impl VoiceBuffer {
             } else {
                 if let Some(idx) = quietest_idx {
                     self.voices.swap_remove(idx);
-                    self.global_voice_counter
-                        .fetch_sub(1, Ordering::Relaxed);
+                    self.global_voice_counter.fetch_sub(1, Ordering::Relaxed);
                 }
             }
 
