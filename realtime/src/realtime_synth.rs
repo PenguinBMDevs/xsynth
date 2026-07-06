@@ -4,7 +4,8 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
-    thread::{self},
+    thread,
+    time::Duration,
 };
 
 use cpal::{
@@ -15,14 +16,14 @@ use crossbeam_channel::{bounded, unbounded};
 
 use xsynth_core::{
     buffered_renderer::{BufferedRenderer, BufferedRendererStatsReader},
-    channel::{ChannelConfigEvent, ChannelEvent, VoiceChannel},
-    channel_group::SynthFormat,
+    channel::{ChannelConfigEvent, VoiceChannel},
+    channel_group::{ChannelGroup, ChannelGroupConfig, ParallelismOptions, SynthFormat},
     effects::VolumeLimiter,
     helpers::{fast_zero_fill, sum_simd},
     AudioPipe, AudioStreamParams, FunctionAudioPipe,
 };
 
-use crate::{RealtimeEventSender, SynthEvent, ThreadCount, XSynthRealtimeConfig};
+use crate::{RealtimeEventSender, RealtimeRenderMode, SynthEvent, ThreadCount, XSynthRealtimeConfig};
 
 /// Holds the statistics for an instance of RealtimeSynth.
 #[derive(Debug, Clone)]
@@ -129,20 +130,147 @@ impl RealtimeSynth {
     /// Initializes a new realtime synthesizer using a given config and a
     /// specified audio output device.
     ///
-    /// See the `XSynthRealtimeConfig` documentation for the available options.
+    /// See the `XSynthRealtimeConfig` documentation for more information.
     /// See the `cpal` crate documentation for the `device` and `stream_config` parameters.
     pub fn open(
         config: XSynthRealtimeConfig,
         device: &Device,
         stream_config: SupportedStreamConfig,
     ) -> Self {
-        let mut channel_stats = Vec::new();
-        let mut senders = Vec::new();
-        let mut command_senders = Vec::new();
-
         let sample_rate = stream_config.sample_rate().0;
         let stream_params = AudioStreamParams::new(sample_rate, stream_config.channels().into());
 
+        let stats = RealtimeSynthStats::new();
+        let total_voice_count = stats.voice_count.clone();
+
+        let channel_count = match config.format {
+            SynthFormat::Midi => 16,
+            SynthFormat::Custom { channels } => channels,
+        };
+
+        let max_nps = Arc::new(AtomicU64::new(config.max_nps));
+
+        let (render, event_senders, thread_handles) = match config.render_mode {
+            RealtimeRenderMode::ChannelGroup => Self::build_channel_group_render(
+                &config,
+                stream_params,
+                channel_count,
+                total_voice_count.clone(),
+                max_nps.clone(),
+            ),
+            RealtimeRenderMode::Threaded => Self::build_threaded_render(
+                &config,
+                stream_params,
+                channel_count,
+                total_voice_count.clone(),
+                max_nps.clone(),
+            ),
+        };
+
+        let buffered_renderer = BufferedRenderer::new(
+            render,
+            stream_params,
+            calculate_render_size(sample_rate, config.render_window_ms),
+        );
+        // Pre-clone stats reader before wrapping in Mutex.
+        // This allows get_stats() to read stats without locking, avoiding
+        // priority inversion in the audio callback path.
+        let buffered_stats = buffered_renderer.get_buffer_stats();
+        let buffered = Arc::new(std::sync::Mutex::new(buffered_renderer));
+
+        let stream = match stream_config.sample_format() {
+            cpal::SampleFormat::F32 => build_stream::<f32>(device, stream_config, buffered.clone()),
+            cpal::SampleFormat::I16 => build_stream::<i16>(device, stream_config, buffered.clone()),
+            cpal::SampleFormat::U16 => build_stream::<u16>(device, stream_config, buffered.clone()),
+            _ => panic!("unsupported sample format"),
+        };
+
+        stream.play().unwrap();
+
+        Self {
+            data: Some(RealtimeSynthThreadSharedData {
+                buffered_renderer: buffered,
+                buffered_stats,
+                event_senders,
+                stream: SendSyncStream(stream),
+            }),
+            join_handles: thread_handles,
+            stats,
+            stream_params,
+        }
+    }
+
+    /// Build the synchronous ChannelGroup render path. This eliminates the 16
+    /// per-channel OS threads and the blocking collect phase that caused audio
+    /// dropouts on macOS.
+    fn build_channel_group_render(
+        config: &XSynthRealtimeConfig,
+        stream_params: AudioStreamParams,
+        channel_count: u32,
+        total_voice_count: Arc<AtomicU64>,
+        max_nps: Arc<AtomicU64>,
+    ) -> (FunctionAudioPipe<Box<dyn FnMut(&mut [f32]) + Send>>, RealtimeEventSender, Vec<thread::JoinHandle<()>>) {
+        // Map the legacy `multithreading` option to ChannelGroup parallelism.
+        // Keep per-channel parallelism (rayon across channels) but disable per-key
+        // parallelism by default to avoid fighting the audio callback thread.
+        let channel_thread_count = match config.multithreading {
+            ThreadCount::None => ThreadCount::None,
+            ThreadCount::Auto => ThreadCount::Auto,
+            ThreadCount::Manual(threads) => ThreadCount::Manual(threads),
+        };
+
+        let parallelism = ParallelismOptions {
+            channel: channel_thread_count,
+            key: ThreadCount::None,
+        };
+
+        let cg_config = ChannelGroupConfig {
+            channel_init_options: config.channel_init_options,
+            format: config.format,
+            audio_params: stream_params,
+            parallelism,
+        };
+
+        let mut channel_group = ChannelGroup::new(cg_config);
+
+        let (event_sender, event_receiver) = unbounded::<SynthEvent>();
+
+        let render_fn: Box<dyn FnMut(&mut [f32]) + Send> = Box::new(move |out| {
+            // Drain all pending events into the synchronous channel group.
+            // `try_iter` is non-blocking and pulls everything that has accumulated
+            // since the last render call.
+            for event in event_receiver.try_iter() {
+                channel_group.send_event(event);
+            }
+
+            channel_group.read_samples_unchecked(out);
+            total_voice_count.store(channel_group.voice_count(), Ordering::Relaxed);
+        });
+        let render = FunctionAudioPipe::new(stream_params, render_fn);
+
+        let senders: Vec<_> = (0..channel_count)
+            .map(|_| {
+                crate::event_senders::EventSender::new(
+                    max_nps.clone(),
+                    crate::event_senders::EventSenderInner::ChannelGroup(event_sender.clone()),
+                    config.ignore_range.clone(),
+                )
+            })
+            .collect();
+
+        let event_senders = RealtimeEventSender::new(senders, RealtimeRenderMode::ChannelGroup);
+
+        (render, event_senders, Vec::new())
+    }
+
+    /// Build the legacy threaded render path with one OS thread per channel.
+    fn build_threaded_render(
+        config: &XSynthRealtimeConfig,
+        stream_params: AudioStreamParams,
+        channel_count: u32,
+        total_voice_count: Arc<AtomicU64>,
+        max_nps: Arc<AtomicU64>,
+    ) -> (FunctionAudioPipe<Box<dyn FnMut(&mut [f32]) + Send>>, RealtimeEventSender, Vec<thread::JoinHandle<()>>) {
         let pool = match config.multithreading {
             ThreadCount::None => None,
             ThreadCount::Auto => Some(Arc::new(rayon::ThreadPoolBuilder::new().build().unwrap())),
@@ -154,13 +282,11 @@ impl RealtimeSynth {
             )),
         };
 
-        let channel_count = match config.format {
-            SynthFormat::Midi => 16,
-            SynthFormat::Custom { channels } => channels,
-        };
-
         let (output_sender, output_receiver) = bounded::<Vec<f32>>(channel_count as usize);
 
+        let mut channel_stats = Vec::new();
+        let mut senders = Vec::new();
+        let mut command_senders = Vec::new();
         let mut thread_handles = vec![];
 
         for _ in 0u32..channel_count {
@@ -170,8 +296,6 @@ impl RealtimeSynth {
             channel_stats.push(stats);
 
             let (event_sender, event_receiver) = unbounded();
-            senders.push(event_sender);
-
             let (command_sender, command_receiver) = bounded::<Vec<f32>>(1);
             command_senders.push(command_sender);
 
@@ -190,15 +314,17 @@ impl RealtimeSynth {
                 })
                 .unwrap();
 
+            senders.push(crate::event_senders::EventSender::new(
+                max_nps.clone(),
+                crate::event_senders::EventSenderInner::Threaded(event_sender),
+                config.ignore_range.clone(),
+            ));
             thread_handles.push(join_handle);
         }
 
         if config.format == SynthFormat::Midi {
             senders[9]
-                .send(ChannelEvent::Config(ChannelConfigEvent::SetPercussionMode(
-                    true,
-                )))
-                .unwrap();
+                .send_config(9, ChannelConfigEvent::SetPercussionMode(true));
         }
 
         let mut vec_cache: VecDeque<Vec<f32>> = VecDeque::new();
@@ -206,11 +332,7 @@ impl RealtimeSynth {
             vec_cache.push_front(Vec::new());
         }
 
-        let stats = RealtimeSynthStats::new();
-
-        let total_voice_count = stats.voice_count.clone();
-
-        let render = FunctionAudioPipe::new(stream_params, move |out| {
+        let render_fn: Box<dyn FnMut(&mut [f32]) + Send> = Box::new(move |out| {
             // Dispatch phase: send pre-zeroed buffers to each channel thread
             for sender in command_senders.iter() {
                 let mut buf = vec_cache.pop_front().unwrap();
@@ -218,76 +340,42 @@ impl RealtimeSynth {
                 sender.send(buf).unwrap();
             }
 
-            // Collect phase: receive rendered buffers and sum into output
-            for _ in 0..channel_count {
-                let buf = output_receiver.recv().unwrap();
-                sum_simd(&buf, out);
-                vec_cache.push_front(buf);
+            // Collect phase: receive rendered buffers and sum into output.
+            // Use try_recv with a short busy-wait bound so that a single slow
+            // channel thread cannot stall the entire render pipeline indefinitely.
+            let mut received = 0usize;
+            let mut spins_without_progress = 0usize;
+            while received < channel_count as usize {
+                match output_receiver.try_recv() {
+                    Ok(buf) => {
+                        sum_simd(&buf, out);
+                        vec_cache.push_front(buf);
+                        received += 1;
+                        spins_without_progress = 0;
+                    }
+                    Err(_) => {
+                        spins_without_progress += 1;
+                        if spins_without_progress > 1024 {
+                            // Back off to avoid burning the CPU if a channel is
+                            // temporarily delayed. A short sleep is still far less
+                            // damaging than blocking the audio callback directly.
+                            thread::sleep(Duration::from_micros(10));
+                            spins_without_progress = 0;
+                        } else {
+                            thread::yield_now();
+                        }
+                    }
+                }
             }
 
             let total_voices = channel_stats.iter().map(|c| c.voice_count()).sum();
             total_voice_count.store(total_voices, Ordering::Relaxed);
         });
+        let render = FunctionAudioPipe::new(stream_params, render_fn);
 
-        let buffered_renderer = BufferedRenderer::new(
-            render,
-            stream_params,
-            calculate_render_size(sample_rate, config.render_window_ms),
-        );
-        // Pre-clone stats reader before wrapping in Mutex.
-        // This allows get_stats() to read stats without locking, avoiding
-        // priority inversion in the audio callback path.
-        let buffered_stats = buffered_renderer.get_buffer_stats();
-        let buffered = Arc::new(std::sync::Mutex::new(buffered_renderer));
+        let event_senders = RealtimeEventSender::new(senders, RealtimeRenderMode::Threaded);
 
-        fn build_stream<T: SizedSample + ConvertSample>(
-            device: &Device,
-            stream_config: SupportedStreamConfig,
-            buffered: Arc<std::sync::Mutex<BufferedRenderer>>,
-        ) -> Stream {
-            let err_fn = |err| eprintln!("an error occurred on stream: {err}");
-            let mut output_vec = Vec::new();
-
-            let mut limiter = VolumeLimiter::new(stream_config.channels());
-
-            device
-                .build_output_stream(
-                    &stream_config.into(),
-                    move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-                        output_vec.resize(data.len(), 0.0);
-                        buffered.lock().unwrap().read(&mut output_vec);
-                        for (i, s) in limiter.limit_iter(output_vec.drain(..)).enumerate() {
-                            data[i] = ConvertSample::from_f32(s);
-                        }
-                    },
-                    err_fn,
-                    None,
-                )
-                .unwrap()
-        }
-
-        let stream = match stream_config.sample_format() {
-            cpal::SampleFormat::F32 => build_stream::<f32>(device, stream_config, buffered.clone()),
-            cpal::SampleFormat::I16 => build_stream::<i16>(device, stream_config, buffered.clone()),
-            cpal::SampleFormat::U16 => build_stream::<u16>(device, stream_config, buffered.clone()),
-            _ => panic!("unsupported sample format"),
-        };
-
-        stream.play().unwrap();
-
-        let max_nps = Arc::new(AtomicU64::new(10000));
-
-        Self {
-            data: Some(RealtimeSynthThreadSharedData {
-                buffered_renderer: buffered,
-                buffered_stats,
-                event_senders: RealtimeEventSender::new(senders, max_nps, config.ignore_range),
-                stream: SendSyncStream(stream),
-            }),
-            join_handles: thread_handles,
-            stats,
-            stream_params,
-        }
+        (render, event_senders, thread_handles)
     }
 
     /// Sends a SynthEvent to the realtime synthesizer.
@@ -371,6 +459,36 @@ impl Drop for RealtimeSynth {
             handle.join().unwrap();
         }
     }
+}
+
+fn build_stream<T: SizedSample + ConvertSample>(
+    device: &Device,
+    stream_config: SupportedStreamConfig,
+    buffered: Arc<std::sync::Mutex<BufferedRenderer>>,
+) -> Stream {
+    let err_fn = |err| eprintln!("an error occurred on stream: {err}");
+    // Pre-allocate the scratch vector to the expected callback size to avoid
+    // repeated resize/allocation inside the audio callback hot path.
+    let mut output_vec = Vec::with_capacity(
+        stream_config.sample_rate().0 as usize * stream_config.channels() as usize / 100,
+    );
+
+    let mut limiter = VolumeLimiter::new(stream_config.channels());
+
+    device
+        .build_output_stream(
+            &stream_config.into(),
+            move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+                output_vec.resize(data.len(), 0.0);
+                buffered.lock().unwrap().read(&mut output_vec);
+                for (i, s) in limiter.limit_iter(output_vec.drain(..)).enumerate() {
+                    data[i] = ConvertSample::from_f32(s);
+                }
+            },
+            err_fn,
+            None,
+        )
+        .unwrap()
 }
 
 trait ConvertSample: SizedSample {

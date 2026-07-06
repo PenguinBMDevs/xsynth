@@ -8,12 +8,15 @@ use std::{
 
 use crossbeam_channel::Sender;
 
-use xsynth_core::channel::{ChannelAudioEvent, ChannelConfigEvent, ChannelEvent, ControlEvent};
+use xsynth_core::channel::{
+    ChannelAudioEvent, ChannelConfigEvent, ChannelEvent, ControlEvent,
+};
 
-use crate::SynthEvent;
+use crate::{RealtimeRenderMode, SynthEvent};
 
 static NPS_WINDOW_MILLISECONDS: u64 = 20;
 
+#[derive(Clone)]
 struct NpsWindow {
     time: Instant,
     notes: u64,
@@ -24,6 +27,7 @@ struct NpsWindow {
 ///
 /// Uses on-demand `Instant::now()` instead of a dedicated thread, eliminating the
 /// per-sender OS thread overhead that previously resulted in ~16 idle threads for MIDI.
+#[derive(Clone)]
 struct RoughNpsTracker {
     windows: VecDeque<NpsWindow>,
     total_window_sum: u64,
@@ -80,11 +84,26 @@ impl RoughNpsTracker {
 }
 
 fn should_send_for_vel_and_nps(vel: u8, nps: u64, max: u64) -> bool {
-    (vel as u64) * max / 127 > nps
+    // max == 0 或 u64::MAX 视为“无限制”，全量播放。
+    if max == 0 || max == u64::MAX {
+        return true;
+    }
+    // 避免 (vel * max) 溢出：先除法再乘法。
+    let threshold = nps.saturating_mul(127) / max.max(1);
+    vel as u64 > threshold
 }
 
-struct EventSender {
-    sender: Sender<ChannelEvent>,
+/// The underlying channel used by an `EventSender`.
+pub(crate) enum EventSenderInner {
+    /// Legacy threaded renderer: each sender talks to one VoiceChannel thread.
+    Threaded(Sender<ChannelEvent>),
+    /// ChannelGroup renderer: every sender forwards to the same render-thread
+    /// channel that feeds the synchronous `ChannelGroup`.
+    ChannelGroup(Sender<SynthEvent>),
+}
+
+pub(crate) struct EventSender {
+    inner: EventSenderInner,
     nps: RoughNpsTracker,
     max_nps: Arc<AtomicU64>,
     skipped_notes: [u64; 128],
@@ -94,11 +113,11 @@ struct EventSender {
 impl EventSender {
     pub fn new(
         max_nps: Arc<AtomicU64>,
-        sender: Sender<ChannelEvent>,
+        inner: EventSenderInner,
         ignore_range: RangeInclusive<u8>,
     ) -> Self {
         EventSender {
-            sender,
+            inner,
             nps: RoughNpsTracker::new(),
             max_nps,
             skipped_notes: [0; 128],
@@ -106,43 +125,113 @@ impl EventSender {
         }
     }
 
-    pub fn send_audio(&mut self, event: ChannelAudioEvent) {
-        match &event {
-            ChannelAudioEvent::NoteOn { vel, key } => {
-                if *key > 127 {
-                    return;
+    fn send_note_on(&mut self, channel: u32, key: u8, vel: u8) {
+        let nps = self.nps.calculate_nps();
+        if should_send_for_vel_and_nps(vel, nps, self.max_nps.load(Ordering::Relaxed))
+            && !self.ignore_range.contains(&vel)
+        {
+            match &self.inner {
+                EventSenderInner::Threaded(sender) => {
+                    let _ = sender.send(ChannelEvent::Audio(ChannelAudioEvent::NoteOn {
+                        key,
+                        vel,
+                    }));
                 }
-
-                let nps = self.nps.calculate_nps();
-
-                if should_send_for_vel_and_nps(*vel, nps, self.max_nps.load(Ordering::Relaxed))
-                    && !self.ignore_range.contains(vel)
-                {
-                    self.sender.send(ChannelEvent::Audio(event)).ok();
-                    self.nps.add_note();
-                } else {
-                    self.skipped_notes[*key as usize] += 1;
-                }
-            }
-            ChannelAudioEvent::NoteOff { key } => {
-                if *key > 127 {
-                    return;
-                }
-
-                if self.skipped_notes[*key as usize] > 0 {
-                    self.skipped_notes[*key as usize] -= 1;
-                } else {
-                    self.sender.send(ChannelEvent::Audio(event)).ok();
+                EventSenderInner::ChannelGroup(sender) => {
+                    let _ = sender.send(SynthEvent::Channel(
+                        channel,
+                        ChannelEvent::Audio(ChannelAudioEvent::NoteOn { key, vel }),
+                    ));
                 }
             }
-            _ => {
-                self.sender.send(ChannelEvent::Audio(event)).ok();
+            self.nps.add_note();
+        } else {
+            self.skipped_notes[key as usize] += 1;
+        }
+    }
+
+    fn send_note_off(&mut self, channel: u32, key: u8) {
+        if self.skipped_notes[key as usize] > 0 {
+            self.skipped_notes[key as usize] -= 1;
+        } else {
+            match &self.inner {
+                EventSenderInner::Threaded(sender) => {
+                    let _ = sender.send(ChannelEvent::Audio(ChannelAudioEvent::NoteOff {
+                        key,
+                    }));
+                }
+                EventSenderInner::ChannelGroup(sender) => {
+                    let _ = sender.send(SynthEvent::Channel(
+                        channel,
+                        ChannelEvent::Audio(ChannelAudioEvent::NoteOff { key }),
+                    ));
+                }
             }
         }
     }
 
-    pub fn send_config(&mut self, event: ChannelConfigEvent) {
-        self.sender.send(ChannelEvent::Config(event)).ok();
+    pub fn send_audio(&mut self, channel: u32, event: ChannelAudioEvent) {
+        match event {
+            ChannelAudioEvent::NoteOn { key, vel } => {
+                if key > 127 {
+                    return;
+                }
+                self.send_note_on(channel, key, vel);
+            }
+            ChannelAudioEvent::NoteOff { key } => {
+                if key > 127 {
+                    return;
+                }
+                self.send_note_off(channel, key);
+            }
+            _ => match &self.inner {
+                EventSenderInner::Threaded(sender) => {
+                    let _ = sender.send(ChannelEvent::Audio(event));
+                }
+                EventSenderInner::ChannelGroup(sender) => {
+                    let _ = sender.send(SynthEvent::Channel(
+                        channel,
+                        ChannelEvent::Audio(event),
+                    ));
+                }
+            },
+        }
+    }
+
+    /// Used for `SynthEvent::AllChannels` in ChannelGroup mode: a single event is
+    /// expanded to all channels by the renderer, so we only need to send once.
+    pub fn send_audio_all_channels(&mut self, event: ChannelAudioEvent) {
+        match &self.inner {
+            EventSenderInner::Threaded(_) => {
+                // Threaded mode dispatches per-channel via each EventSender.
+                self.send_audio(0, event);
+            }
+            EventSenderInner::ChannelGroup(sender) => {
+                let _ = sender.send(SynthEvent::AllChannels(ChannelEvent::Audio(event)));
+            }
+        }
+    }
+
+    pub fn send_config(&mut self, channel: u32, event: ChannelConfigEvent) {
+        match &self.inner {
+            EventSenderInner::Threaded(sender) => {
+                let _ = sender.send(ChannelEvent::Config(event));
+            }
+            EventSenderInner::ChannelGroup(sender) => {
+                let _ = sender.send(SynthEvent::Channel(channel, ChannelEvent::Config(event)));
+            }
+        }
+    }
+
+    pub fn send_config_all_channels(&mut self, event: ChannelConfigEvent) {
+        match &self.inner {
+            EventSenderInner::Threaded(sender) => {
+                let _ = sender.send(ChannelEvent::Config(event));
+            }
+            EventSenderInner::ChannelGroup(sender) => {
+                let _ = sender.send(SynthEvent::AllChannels(ChannelEvent::Config(event)));
+            }
+        }
     }
 
     pub fn set_ignore_range(&mut self, ignore_range: RangeInclusive<u8>) {
@@ -153,7 +242,14 @@ impl EventSender {
 impl Clone for EventSender {
     fn clone(&self) -> Self {
         EventSender {
-            sender: self.sender.clone(),
+            inner: match &self.inner {
+                EventSenderInner::Threaded(sender) => {
+                    EventSenderInner::Threaded(sender.clone())
+                }
+                EventSenderInner::ChannelGroup(sender) => {
+                    EventSenderInner::ChannelGroup(sender.clone())
+                }
+            },
             max_nps: self.max_nps.clone(),
 
             // Rough nps tracker is only used for very extreme spam situations,
@@ -172,20 +268,15 @@ impl Clone for EventSender {
 #[derive(Clone)]
 pub struct RealtimeEventSender {
     senders: Vec<EventSender>,
+    mode: RealtimeRenderMode,
 }
 
 impl RealtimeEventSender {
     pub(super) fn new(
-        senders: Vec<Sender<ChannelEvent>>,
-        max_nps: Arc<AtomicU64>,
-        ignore_range: RangeInclusive<u8>,
+        senders: Vec<EventSender>,
+        mode: RealtimeRenderMode,
     ) -> RealtimeEventSender {
-        RealtimeEventSender {
-            senders: senders
-                .into_iter()
-                .map(|s| EventSender::new(max_nps.clone(), s, ignore_range.clone()))
-                .collect(),
-        }
+        RealtimeEventSender { senders, mode }
     }
 
     /// Sends a SynthEvent to the realtime synthesizer.
@@ -194,21 +285,41 @@ impl RealtimeEventSender {
     pub fn send_event(&mut self, event: SynthEvent) {
         match event {
             SynthEvent::Channel(channel, event) => match event {
-                ChannelEvent::Audio(e) => self.senders[channel as usize].send_audio(e),
-                ChannelEvent::Config(e) => self.senders[channel as usize].send_config(e),
-            },
-            SynthEvent::AllChannels(event) => match event {
                 ChannelEvent::Audio(e) => {
-                    for sender in self.senders.iter_mut() {
-                        sender.send_audio(e);
+                    if let Some(sender) = self.senders.get_mut(channel as usize) {
+                        sender.send_audio(channel, e);
                     }
                 }
                 ChannelEvent::Config(e) => {
-                    for sender in self.senders.iter_mut() {
-                        sender.send_config(e.clone());
+                    if let Some(sender) = self.senders.get_mut(channel as usize) {
+                        sender.send_config(channel, e);
                     }
                 }
             },
+            SynthEvent::AllChannels(event) => {
+                // In ChannelGroup mode, AllChannels events are sent once and the
+                // renderer expands them. In Threaded mode, each channel sender
+                // forwards the event to its own VoiceChannel thread.
+                let first = match self.mode {
+                    RealtimeRenderMode::ChannelGroup => self.senders.first_mut(),
+                    RealtimeRenderMode::Threaded => None,
+                };
+
+                if let Some(sender) = first {
+                    match event {
+                        ChannelEvent::Audio(e) => sender.send_audio_all_channels(e),
+                        ChannelEvent::Config(e) => sender.send_config_all_channels(e),
+                    }
+                } else {
+                    for (channel, sender) in self.senders.iter_mut().enumerate() {
+                        let channel = channel as u32;
+                        match event.clone() {
+                            ChannelEvent::Audio(e) => sender.send_audio(channel, e),
+                            ChannelEvent::Config(e) => sender.send_config(channel, e),
+                        }
+                    }
+                }
+            }
         }
     }
 
