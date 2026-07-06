@@ -78,6 +78,15 @@ pub struct XSynthRealtimeConfig {
     ///
     /// Default: `u64::MAX` (no limit)
     pub max_nps: u64,
+
+    /// Render duration warning threshold in milliseconds. If a single render
+    /// call (flush + render) exceeds this threshold, a warning is logged.
+    /// Set to 0 to disable the warning.
+    ///
+    /// Recommended: `5.0` (half a 10 ms render window).
+    ///
+    /// Default: `5.0`
+    pub render_warn_threshold_ms: f64,
 }
 
 impl Default for XSynthRealtimeConfig {
@@ -90,6 +99,7 @@ impl Default for XSynthRealtimeConfig {
             ignore_range: 0..=0,
             render_mode: RealtimeRenderMode::default(),
             max_nps: u64::MAX,
+            render_warn_threshold_ms: 5.0,
         }
     }
 }

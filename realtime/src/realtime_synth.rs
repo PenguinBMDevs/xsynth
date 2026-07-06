@@ -1,11 +1,11 @@
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicI64, AtomicU64, Ordering},
         Arc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use cpal::{
@@ -69,6 +69,44 @@ impl RealtimeSynthStatsReader {
     }
 }
 
+/// Performance statistics for a single render cycle.
+#[derive(Debug, Clone, Copy)]
+pub struct RenderPerfStats {
+    /// Duration of the last render call in microseconds.
+    pub last_render_us: i64,
+    /// Peak render duration seen so far, in microseconds.
+    pub peak_render_us: i64,
+    /// Number of MIDI events drained in the last render call.
+    pub last_event_count: u64,
+}
+
+/// Shared mutable performance counters accessible from the render thread.
+struct RenderPerfShared {
+    last_render_ns: AtomicI64,
+    peak_render_ns: AtomicI64,
+    last_event_count: AtomicU64,
+}
+
+impl RenderPerfShared {
+    fn new() -> Self {
+        Self {
+            last_render_ns: AtomicI64::new(0),
+            peak_render_ns: AtomicI64::new(0),
+            last_event_count: AtomicU64::new(0),
+        }
+    }
+
+    fn snapshot(&self) -> RenderPerfStats {
+        let last = self.last_render_ns.load(Ordering::Relaxed);
+        let peak = self.peak_render_ns.load(Ordering::Relaxed);
+        RenderPerfStats {
+            last_render_us: last / 1000,
+            peak_render_us: peak / 1000,
+            last_event_count: self.last_event_count.load(Ordering::Relaxed),
+        }
+    }
+}
+
 // A helper for making the stream be send/sync, allowing the entire synth to be passed between threads.
 // The stream is never actually accessed from multiple threads, it's only stored for ownership and then dropped.
 struct SendSyncStream(Stream);
@@ -90,6 +128,7 @@ pub struct RealtimeSynth {
     join_handles: Vec<thread::JoinHandle<()>>,
 
     stats: RealtimeSynthStats,
+    perf: Arc<RenderPerfShared>,
 
     stream_params: AudioStreamParams,
 }
@@ -143,6 +182,8 @@ impl RealtimeSynth {
         let stats = RealtimeSynthStats::new();
         let total_voice_count = stats.voice_count.clone();
 
+        let perf = Arc::new(RenderPerfShared::new());
+
         let channel_count = match config.format {
             SynthFormat::Midi => 16,
             SynthFormat::Custom { channels } => channels,
@@ -157,6 +198,7 @@ impl RealtimeSynth {
                 channel_count,
                 total_voice_count.clone(),
                 max_nps.clone(),
+                perf.clone(),
             ),
             RealtimeRenderMode::Threaded => Self::build_threaded_render(
                 &config,
@@ -196,25 +238,29 @@ impl RealtimeSynth {
             }),
             join_handles: thread_handles,
             stats,
+            perf,
             stream_params,
         }
     }
 
-    /// Build the synchronous ChannelGroup render path. This eliminates the 16
-    /// per-channel OS threads and the blocking collect phase that caused audio
-    /// dropouts on macOS.
+    /// Build the synchronous ChannelGroup render path with channel-level parallelism.
+    ///
+    /// This eliminates the 16 per-channel OS threads and the blocking collect phase
+    /// that caused audio dropouts on macOS, while still using rayon for channel-level
+    /// parallel rendering inside the single render thread.
     fn build_channel_group_render(
         config: &XSynthRealtimeConfig,
         stream_params: AudioStreamParams,
         channel_count: u32,
         total_voice_count: Arc<AtomicU64>,
         max_nps: Arc<AtomicU64>,
+        perf: Arc<RenderPerfShared>,
     ) -> (FunctionAudioPipe<Box<dyn FnMut(&mut [f32]) + Send>>, RealtimeEventSender, Vec<thread::JoinHandle<()>>) {
-        // Map the legacy `multithreading` option to ChannelGroup parallelism.
-        // Keep per-channel parallelism (rayon across channels) but disable per-key
-        // parallelism by default to avoid fighting the audio callback thread.
+        // Map the legacy `multithreading` option to ChannelGroup channel-level
+        // parallelism. When `None`, use Auto so that channel rendering is still
+        // parallelised via rayon without creating per-channel OS threads.
         let channel_thread_count = match config.multithreading {
-            ThreadCount::None => ThreadCount::None,
+            ThreadCount::None => ThreadCount::Auto,
             ThreadCount::Auto => ThreadCount::Auto,
             ThreadCount::Manual(threads) => ThreadCount::Manual(threads),
         };
@@ -233,18 +279,64 @@ impl RealtimeSynth {
 
         let mut channel_group = ChannelGroup::new(cg_config);
 
-        let (event_sender, event_receiver) = unbounded::<SynthEvent>();
+        let warn_threshold_us = (config.render_warn_threshold_ms * 1000.0) as i64;
+
+        // Bounded channel acts as natural backpressure: when the channel is full,
+        // the playback thread blocks on send(), automatically matching the event
+        // production rate to the synth's processing capacity.
+        // 65536 allows ~10-20ms of event burst to be buffered without blocking.
+        let (event_sender, event_receiver) = crossbeam_channel::bounded::<SynthEvent>(65536);
 
         let render_fn: Box<dyn FnMut(&mut [f32]) + Send> = Box::new(move |out| {
-            // Drain all pending events into the synchronous channel group.
-            // `try_iter` is non-blocking and pulls everything that has accumulated
-            // since the last render call.
+            let start = Instant::now();
+
+            // Drain ALL pending events from the bounded channel.
+            // Because the channel itself limits total in-flight events to 65536,
+            // no single render cycle can be overwhelmed. The bounded capacity
+            // provides natural backpressure without needing a software count limit.
+            let mut event_count = 0u64;
             for event in event_receiver.try_iter() {
                 channel_group.send_event(event);
+                event_count += 1;
             }
 
             channel_group.read_samples_unchecked(out);
             total_voice_count.store(channel_group.voice_count(), Ordering::Relaxed);
+
+            let elapsed = start.elapsed();
+            let elapsed_ns = elapsed.as_nanos() as i64;
+            let elapsed_us = elapsed.as_micros() as i64;
+
+            // Update shared perf counters
+            perf.last_render_ns.store(elapsed_ns, Ordering::Relaxed);
+            let prev_peak = perf.peak_render_ns.load(Ordering::Relaxed);
+            if elapsed_ns > prev_peak {
+                perf.peak_render_ns.store(elapsed_ns, Ordering::Relaxed);
+            }
+            perf.last_event_count.store(event_count, Ordering::Relaxed);
+
+            // Log warning if render exceeds threshold
+            if warn_threshold_us > 0 && elapsed_us > warn_threshold_us {
+                let delayed = event_receiver.len();
+                let voice_count = channel_group.voice_count();
+                if delayed > 0 {
+                    eprintln!(
+                        "[xsynth WARN] render slow: {:.2} ms (events={}, voices={}, delayed={}, peak={:.2} ms)",
+                        elapsed_us as f64 / 1000.0,
+                        event_count,
+                        voice_count,
+                        delayed,
+                        elapsed_ns.max(prev_peak) as f64 / 1_000_000.0,
+                    );
+                } else {
+                    eprintln!(
+                        "[xsynth WARN] render slow: {:.2} ms (voice={}, peak={:.2} ms)",
+                        elapsed_us as f64 / 1000.0,
+                        voice_count,
+                        elapsed_ns.max(prev_peak) as f64 / 1_000_000.0,
+                    );
+                }
+            }
         });
         let render = FunctionAudioPipe::new(stream_params, render_fn);
 
@@ -423,6 +515,14 @@ impl RealtimeSynth {
         // This avoids priority inversion where the audio callback (which holds
         // the BufferedRenderer lock via read()) would be blocked.
         RealtimeSynthStatsReader::new(self.stats.clone(), data.buffered_stats.clone())
+    }
+
+    /// Returns the performance statistics for the last render cycle.
+    ///
+    /// `RenderPerfStats` includes render timing and event counts.
+    /// Useful for diagnosing audio dropouts caused by overloaded rendering.
+    pub fn perf_stats(&self) -> RenderPerfStats {
+        self.perf.snapshot()
     }
 
     /// Returns the stream parameters of the audio output device.
