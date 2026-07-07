@@ -52,6 +52,19 @@ pub fn load_soundfont(
     sf2_path: impl Into<PathBuf>,
     sample_rate: u32,
 ) -> Result<Vec<Sf2Preset>, Sf2ParseError> {
+    let (presets, _samples) = load_soundfont_with_samples(sf2_path, sample_rate)?;
+    Ok(presets)
+}
+
+/// Parses an SF2 file and returns both presets and raw sample data.
+///
+/// The returned `Sf2Sample` vector contains all loaded samples with their
+/// loop points, pitch info, and f32 sample data — useful for GPU compute
+/// renderers or custom audio processing pipelines.
+pub fn load_soundfont_with_samples(
+    sf2_path: impl Into<PathBuf>,
+    sample_rate: u32,
+) -> Result<(Vec<Sf2Preset>, Vec<sample::Sf2Sample>), Sf2ParseError> {
     let sf2_path: PathBuf = sf2_path.into();
     let sf2_path: PathBuf = sf2_path
         .canonicalize()
@@ -74,10 +87,12 @@ pub fn load_soundfont(
 
     let presets = preset::Sf2ParsedPreset::parse_presets(sf2.presets);
 
-    Ok(preset::Sf2ParsedPreset::merge_presets(
-        sample_data,
+    let presets = preset::Sf2ParsedPreset::merge_presets(
+        sample_data.clone(),
         instruments,
         presets,
         sample_rate,
-    ))
+    );
+
+    Ok((presets, sample_data))
 }
