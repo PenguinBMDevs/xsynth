@@ -315,28 +315,28 @@ impl RealtimeSynth {
             }
             perf.last_event_count.store(event_count, Ordering::Relaxed);
 
-            // Log warning if render exceeds threshold
-            if warn_threshold_us > 0 && elapsed_us > warn_threshold_us {
-                let delayed = event_receiver.len();
-                let voice_count = channel_group.voice_count();
-                if delayed > 0 {
-                    eprintln!(
-                        "[xsynth WARN] render slow: {:.2} ms (events={}, voices={}, delayed={}, peak={:.2} ms)",
-                        elapsed_us as f64 / 1000.0,
-                        event_count,
-                        voice_count,
-                        delayed,
-                        elapsed_ns.max(prev_peak) as f64 / 1_000_000.0,
-                    );
-                } else {
-                    eprintln!(
-                        "[xsynth WARN] render slow: {:.2} ms (voice={}, peak={:.2} ms)",
-                        elapsed_us as f64 / 1000.0,
-                        voice_count,
-                        elapsed_ns.max(prev_peak) as f64 / 1_000_000.0,
-                    );
-                }
-            }
+            // Log warning if render exceeds threshold (disabled by user request)
+            // if warn_threshold_us > 0 && elapsed_us > warn_threshold_us {
+            //     let delayed = event_receiver.len();
+            //     let voice_count = channel_group.voice_count();
+            //     if delayed > 0 {
+            //         eprintln!(
+            //             "[xsynth WARN] render slow: {:.2} ms (events={}, voices={}, delayed={}, peak={:.2} ms)",
+            //             elapsed_us as f64 / 1000.0,
+            //             event_count,
+            //             voice_count,
+            //             delayed,
+            //             elapsed_ns.max(prev_peak) as f64 / 1_000_000.0,
+            //         );
+            //     } else {
+            //         eprintln!(
+            //             "[xsynth WARN] render slow: {:.2} ms (voice={}, peak={:.2} ms)",
+            //             elapsed_us as f64 / 1000.0,
+            //             voice_count,
+            //             elapsed_ns.max(prev_peak) as f64 / 1_000_000.0,
+            //         );
+            //     }
+            // }
         });
         let render = FunctionAudioPipe::new(stream_params, render_fn);
 
