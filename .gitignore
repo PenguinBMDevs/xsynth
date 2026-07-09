@@ -11,3 +11,4 @@ test*
 .workbuddy
 .opencode
 .ai-context/
+.codegraph/
