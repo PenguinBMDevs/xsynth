@@ -322,25 +322,28 @@ impl VoiceChannel {
                 }
             }
             None => {
-                // Use per-key audio caches + parallel rendering via the global
-                // rayon thread pool. This gives multi-core speedup even when no
-                // custom threadpool was passed.
+                // Sequential per-key rendering.
+                // Skips silent keys (no events + no voices) to avoid the cost of
+                // zero-filling 128 audio caches every render cycle.
                 let len = out.len();
                 let control_data = &self.voice_control_data;
                 let params = &self.params;
-                self.key_voices.par_iter_mut().for_each(|key| {
+                for key in self.key_voices.iter_mut() {
+                    // Flush cached events (must run even for silent keys)
+                    let has_events = !key.event_cache.is_empty();
                     for e in key.event_cache.drain(..) {
                         key.data.send_event(e, control_data, &params.channel_sf);
                     }
 
-                    fast_zero_fill(&mut key.audio_cache, len);
-                    key.data.render_to(&mut key.audio_cache);
-                });
+                    let has_voices = key.data.has_voices();
+                    if has_events || has_voices {
+                        // Only allocate & render when there is actual work
+                        fast_zero_fill(&mut key.audio_cache, len);
+                        key.data.render_to(&mut key.audio_cache);
 
-                // Sum per-key buffers to output (sequential)
-                for key in self.key_voices.iter() {
-                    if key.data.has_voices() {
-                        sum_simd(&key.audio_cache, out);
+                        if has_voices {
+                            sum_simd(&key.audio_cache, out);
+                        }
                     }
                 }
             }
