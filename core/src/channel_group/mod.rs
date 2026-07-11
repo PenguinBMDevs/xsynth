@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     channel::{ChannelAudioEvent, ChannelConfigEvent, ChannelEvent, VoiceChannel},
-    helpers::{fast_zero_fill, sum_simd},
+    helpers::{set_buffer_len, sum_simd},
     AudioPipe, AudioStreamParams,
 };
 
@@ -173,7 +173,9 @@ impl ChannelGroup {
                         .par_iter_mut()
                         .zip(sample_cache_vecs.par_iter_mut())
                         .for_each(|(channel, samples)| {
-                            fast_zero_fill(samples, len);
+                            // VoiceChannel::read_samples zeros its own output,
+                            // so we only need to set the length here.
+                            unsafe { set_buffer_len(samples, len) };
                             channel.read_samples(samples.as_mut_slice());
                         });
 
@@ -190,7 +192,9 @@ impl ChannelGroup {
                     .iter_mut()
                     .zip(self.sample_cache_vecs.iter_mut())
                 {
-                    fast_zero_fill(samples, len);
+                    // VoiceChannel::read_samples zeros its own output,
+                    // so we only need to set the length here.
+                    unsafe { set_buffer_len(samples, len) };
                     channel.read_samples(samples.as_mut_slice());
                 }
 

@@ -170,8 +170,12 @@ impl<S: Simd + Send + Sync> StereoSampledVoiceSpawner<S> {
         SIMDSampleMono<S>: Mul<Sample, Output = Sample>,
         Gen: SIMDVoiceGenerator<S, Sample>,
     {
+        // EnvelopeParameters is Copy, so dereference the Arc directly instead
+        // of cloning it (avoids an atomic refcount update in the spawn hot path).
+        let envelope_params = *self.volume_envelope_params;
+
         let modified_params = SIMDVoiceEnvelope::<S>::get_modified_envelope(
-            *self.volume_envelope_params.clone(),
+            envelope_params,
             control.envelope,
             self.stream_params.sample_rate as f32,
         );
@@ -179,7 +183,7 @@ impl<S: Simd + Send + Sync> StereoSampledVoiceSpawner<S> {
         let allow_release = self.loop_params.mode != LoopMode::OneShot;
 
         let volume_envelope = SIMDVoiceEnvelope::new(
-            *self.volume_envelope_params.clone(),
+            envelope_params,
             modified_params,
             allow_release,
             self.stream_params.sample_rate as f32,

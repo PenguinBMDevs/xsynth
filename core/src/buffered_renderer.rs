@@ -11,7 +11,7 @@ use std::{
 
 use crossbeam_channel::{unbounded, Receiver};
 
-use crate::helpers::fast_zero_fill;
+use crate::helpers::set_buffer_len;
 use crate::AudioStreamParams;
 
 use super::AudioPipe;
@@ -169,9 +169,9 @@ impl BufferedRenderer {
                         .try_recv()
                         .unwrap_or_else(|_| Vec::with_capacity(required_len));
 
-                    // fast_zero_fill handles both capacity extension and zeroing
-                    // in a single memset operation — faster than resize+fill
-                    fast_zero_fill(&mut vec, required_len);
+                    // read_samples fully overwrites the buffer, so we only need
+                    // to ensure the vec has the correct length.
+                    unsafe { set_buffer_len(&mut vec, required_len) };
                     render.read_samples(&mut vec);
 
                     // Send the samples, break if the pipe is broken

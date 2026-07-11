@@ -384,41 +384,39 @@ fn parse_tokens_resolved_recursive(
     let mut parsed_includes = HashMap::new();
 
     for t in iter {
+        let t = t?;
         match t {
-            Ok(t) => match t {
-                SfzTokenWithMeta::Import(mut path) => {
-                    for (key, replace) in defines.borrow().iter() {
-                        if path.contains(key) {
-                            path = path.replace(key, replace);
-                        }
-                    }
-
-                    // Get the cached tokens for this current path, or parse them if they haven't been parsed yet
-                    let parsed_tokens = parsed_includes.entry(path.clone()).or_insert_with(|| {
-                        let full_path = parent_path.join(&path);
-                        parse_tokens_resolved_recursive(instr_path, &full_path, defines)
-                    });
-
-                    if let Ok(parsed_tokens) = parsed_tokens {
-                        tokens.extend_from_slice(parsed_tokens);
-                    } else {
-                        // If we recieved an error, then extact the owned error from the hashmap and return it
-                        return Err(parsed_includes.remove(&path).unwrap().unwrap_err());
+            SfzTokenWithMeta::Import(mut path) => {
+                for (key, replace) in defines.borrow().iter() {
+                    if path.contains(key) {
+                        path = path.replace(key, replace);
                     }
                 }
-                SfzTokenWithMeta::Group(group) => tokens.push(SfzToken::Group(group)),
-                SfzTokenWithMeta::Opcode(opcode) => tokens.push(SfzToken::Opcode(opcode)),
-                SfzTokenWithMeta::Define(variable, value) => {
-                    // We clear the include cache here so if the same file is included
-                    // it will use the new definition values
-                    parsed_includes.clear();
 
-                    defines
-                        .borrow_mut()
-                        .insert(variable.trim().to_owned(), value.trim().to_owned());
+                // Get the cached tokens for this current path, or parse them if they haven't been parsed yet
+                let parsed_tokens = parsed_includes.entry(path.clone()).or_insert_with(|| {
+                    let full_path = parent_path.join(&path);
+                    parse_tokens_resolved_recursive(instr_path, &full_path, defines)
+                });
+
+                if let Ok(parsed_tokens) = parsed_tokens {
+                    tokens.extend_from_slice(parsed_tokens);
+                } else {
+                    // If we recieved an error, then extact the owned error from the hashmap and return it
+                    return Err(parsed_includes.remove(&path).unwrap().unwrap_err());
                 }
-            },
-            Err(e) => return Err(e),
+            }
+            SfzTokenWithMeta::Group(group) => tokens.push(SfzToken::Group(group)),
+            SfzTokenWithMeta::Opcode(opcode) => tokens.push(SfzToken::Opcode(opcode)),
+            SfzTokenWithMeta::Define(variable, value) => {
+                // We clear the include cache here so if the same file is included
+                // it will use the new definition values
+                parsed_includes.clear();
+
+                defines
+                    .borrow_mut()
+                    .insert(variable.trim().to_owned(), value.trim().to_owned());
+            }
         }
     }
 

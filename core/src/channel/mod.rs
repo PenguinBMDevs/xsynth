@@ -244,11 +244,11 @@ impl VoiceChannel {
 
         match self.stream_params.channels {
             ChannelCount::Mono => {
-                // Volume with smoother curve (cubic instead of quadratic for more natural response)
+                // Compute channel gain once per buffer; volume/expression change
+                // slowly enough that a per-buffer value matches the stereo path.
+                let vol = control.volume.get_next() * control.expression.get_next();
+                let vol = vol * vol * vol;
                 for sample in out.iter_mut() {
-                    let vol = control.volume.get_next() * control.expression.get_next();
-                    // Use a gentler curve to prevent sudden volume jumps
-                    let vol = vol * vol * vol;
                     *sample *= vol;
                 }
             }

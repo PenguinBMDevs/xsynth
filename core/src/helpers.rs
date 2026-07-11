@@ -58,6 +58,18 @@ pub fn get_render_buffer(size: usize) -> Vec<f32> {
     })
 }
 
+/// Resize the vec to `len` without initializing elements.
+///
+/// # Safety
+/// The caller must overwrite all `len` elements before reading.
+#[inline]
+pub unsafe fn set_buffer_len(vec: &mut Vec<f32>, len: usize) {
+    if vec.len() < len {
+        vec.reserve(len - vec.len());
+    }
+    vec.set_len(len);
+}
+
 /// Return a buffer to the thread-local pool
 #[inline]
 pub fn return_render_buffer(buf: Vec<f32>) {
