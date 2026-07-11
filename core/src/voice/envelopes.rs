@@ -625,10 +625,20 @@ impl<T: Simd> SIMDVoiceEnvelope<T> {
         if self.state.current_stage != EnvelopeStage::Release {
             return;
         }
-        for i in 0..T::Vf32::WIDTH {
-            if values[i].abs() >= FINISH_THRESHOLD {
-                return;
-            }
+        // SIMD horizontal compare: check if any lane has abs(value) >= threshold
+        // using a single SIMD comparison + horizontal reduction instead of a
+        // scalar per-element loop.
+        let any_above = simd_invoke!(T, {
+            let threshold = T::Vf32::set1(FINISH_THRESHOLD);
+            let abs_values = values.abs();
+            let mask = abs_values.cmp_gte(threshold);
+            // mask is all 1s where abs >= threshold, all 0s otherwise.
+            // Bitwise AND with threshold gives threshold where true, 0.0 where
+            // false. horizontal_add > 0.0 iff any lane was above threshold.
+            (mask & threshold).horizontal_add()
+        });
+        if any_above > 0.0 {
+            return;
         }
         // All lanes below threshold — safe to terminate
         self.state = self.params.get_stage_data(EnvelopeStage::Finished, 0.0);

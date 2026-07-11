@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
 #[cfg(target_arch = "wasm32")]
@@ -8,7 +10,14 @@ use core::arch::x86_64::*;
 /// Sum the values of `source` to the values of `target`, writing to `target`.
 ///
 /// Uses runtime selected SIMD operations with aggressive optimization.
+/// The selected SIMD backend is cached in a `OnceLock` to avoid re-running
+/// feature detection on every call.
 /// Panics if source and target have different lengths.
+type SumFn = unsafe fn(&[f32], &mut [f32]);
+
+static SUM_FN: OnceLock<SumFn> = OnceLock::new();
+
+#[allow(unreachable_code)]
 #[inline]
 pub fn sum_simd(source: &[f32], target: &mut [f32]) {
     let len = source.len().min(target.len());
@@ -24,40 +33,29 @@ pub fn sum_simd(source: &[f32], target: &mut [f32]) {
         target.len()
     );
 
-    #[cfg(target_arch = "x86_64")]
-    if std::arch::is_x86_feature_detected!("avx2") {
-        unsafe {
-            sum_simd_avx2(&source[..len], &mut target[..len]);
+    let f = SUM_FN.get_or_init(|| {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::arch::is_x86_feature_detected!("avx2") {
+                return sum_simd_avx2 as SumFn;
+            }
+            if std::arch::is_x86_feature_detected!("sse2") {
+                return sum_simd_sse2 as SumFn;
+            }
         }
-        return;
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    if std::arch::is_x86_feature_detected!("sse2") {
-        unsafe {
-            sum_simd_sse2(&source[..len], &mut target[..len]);
+        #[cfg(target_arch = "aarch64")]
+        {
+            if std::arch::is_aarch64_feature_detected!("neon") {
+                return sum_simd_neon as SumFn;
+            }
         }
-        return;
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    if std::arch::is_aarch64_feature_detected!("neon") {
-        unsafe {
-            sum_simd_neon(&source[..len], &mut target[..len]);
+        #[cfg(target_arch = "wasm32")]
+        {
+            return sum_simd_wasm as SumFn;
         }
-        return;
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe {
-            sum_simd_wasm(&source[..len], &mut target[..len]);
-        }
-        return;
-    }
-
-    #[allow(unreachable_code)]
-    sum_simd_fallback(&source[..len], &mut target[..len]);
+        sum_simd_fallback as SumFn
+    });
+    unsafe { f(&source[..len], &mut target[..len]) }
 }
 
 #[cfg(target_arch = "x86_64")]

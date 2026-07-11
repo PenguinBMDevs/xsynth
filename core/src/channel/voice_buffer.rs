@@ -218,22 +218,26 @@ impl VoiceBuffer {
     /// voice management corruption (was: clearing all entries blindly).
     #[inline(always)]
     pub fn remove_ended_voices(&mut self) {
-        // Use swap_remove for O(1) per-element removal
+        // Use retain to preserve voice order and cache locality.
+        // swap_remove was O(1) per-element but scrambled voice order,
+        // causing cache misses in the subsequent render_to loop.
         let mut removed = 0usize;
-        let mut i = 0;
-        while i < self.voices.len() {
-            if self.voices[i].ended() {
-                // Clean up damper tracking before removal
-                self.held_by_damper.remove(&self.voices[i].id);
-                self.voices.swap_remove(i);
+        let mut to_remove_ids: Vec<usize> = Vec::new();
+
+        self.voices.retain(|voice| {
+            if voice.ended() {
+                to_remove_ids.push(voice.id);
                 removed += 1;
-                // Don't increment i, check the swapped element
+                false
             } else {
-                i += 1;
+                true
             }
+        });
+
+        for id in to_remove_ids {
+            self.held_by_damper.remove(&id);
         }
 
-        // Decrement global voice counter for removed voices
         if removed > 0 {
             self.global_voice_counter
                 .fetch_sub(removed as u64, Ordering::Relaxed);

@@ -253,20 +253,41 @@ impl VoiceChannel {
                 }
             }
             ChannelCount::Stereo => {
-                // Pre-calculate volume and pan to avoid redundant computations
                 let vol = control.volume.get_next() * control.expression.get_next();
-                // Use a gentler cubic curve to prevent sudden volume jumps
                 let vol = vol * vol * vol;
 
-                // Pan with constant power panning law for smooth stereo image
                 let pan = control.pan.get_next().clamp(0.0, 1.0);
                 let pan_angle = pan * std::f32::consts::PI / 2.0;
-                let left_gain = pan_angle.cos();
-                let right_gain = pan_angle.sin();
+                let left_gain = vol * pan_angle.cos();
+                let right_gain = vol * pan_angle.sin();
 
-                for sample in out.chunks_mut(2) {
-                    sample[0] *= vol * left_gain;
-                    sample[1] *= vol * right_gain;
+                // SIMD batch processing: process 4 stereo frames (8 f32) at a time
+                let lg = [left_gain; 4];
+                let rg = [right_gain; 4];
+                let mut i = 0;
+                while i + 8 <= out.len() {
+                    // Load 4 left + 4 right samples
+                    let mut l = [0.0f32; 4];
+                    let mut r = [0.0f32; 4];
+                    for j in 0..4 {
+                        l[j] = out[i + j * 2];
+                        r[j] = out[i + j * 2 + 1];
+                    }
+                    for j in 0..4 {
+                        l[j] *= lg[j];
+                        r[j] *= rg[j];
+                    }
+                    for j in 0..4 {
+                        out[i + j * 2] = l[j];
+                        out[i + j * 2 + 1] = r[j];
+                    }
+                    i += 8;
+                }
+                // Scalar tail
+                while i + 2 <= out.len() {
+                    out[i] *= left_gain;
+                    out[i + 1] *= right_gain;
+                    i += 2;
                 }
             }
         }
@@ -329,13 +350,13 @@ impl VoiceChannel {
             }
             None => {
                 // Sequential per-key rendering.
-                // Skips silent keys (no events + no voices) to avoid the cost of
-                // zero-filling 128 audio caches every render cycle.
-                let len = out.len();
+                // Renders directly to the output buffer, eliminating the
+                // intermediate audio_cache + sum_simd overhead.
+                // VoiceBase::render_to uses additive accumulation (buffer[i] += sample),
+                // so direct rendering is safe and produces the same result.
                 let control_data = &self.voice_control_data;
                 let params = &self.params;
                 for key in self.key_voices.iter_mut() {
-                    // Flush cached events (must run even for silent keys)
                     let has_events = !key.event_cache.is_empty();
                     for e in key.event_cache.drain(..) {
                         key.data.send_event(e, control_data, &params.channel_sf);
@@ -343,13 +364,7 @@ impl VoiceChannel {
 
                     let has_voices = key.data.has_voices();
                     if has_events || has_voices {
-                        // Only allocate & render when there is actual work
-                        fast_zero_fill(&mut key.audio_cache, len);
-                        key.data.render_to(&mut key.audio_cache);
-
-                        if has_voices {
-                            sum_simd(&key.audio_cache, out);
-                        }
+                        key.data.render_to(out);
                     }
                 }
             }
