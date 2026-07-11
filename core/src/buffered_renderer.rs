@@ -235,10 +235,9 @@ impl BufferedRenderer {
             .store(dest.len() as i64, Ordering::Relaxed);
 
         // Read from current remainder
-        for r in self.remainder.drain(0..len) {
-            dest[i] = r;
-            i += 1;
-        }
+        dest[i..i + len].copy_from_slice(&self.remainder[..len]);
+        self.remainder.drain(0..len);
+        i += len;
 
         // Return empty remainder vec to the pool
         if self.remainder.is_empty() && self.remainder.capacity() > 0 {
@@ -258,10 +257,9 @@ impl BufferedRenderer {
             match self.receive.try_recv() {
                 Ok(mut buf) => {
                     let len = buf.len().min(dest.len() - i);
-                    for r in buf.drain(0..len) {
-                        dest[i] = r;
-                        i += 1;
-                    }
+                    dest[i..i + len].copy_from_slice(&buf[..len]);
+                    buf.drain(0..len);
+                    i += len;
                     if buf.is_empty() {
                         let _ = self.return_tx.send(buf);
                     } else {

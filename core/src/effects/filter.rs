@@ -55,6 +55,7 @@ impl BiQuadFilter {
         self.filter.replace_coefficients(coeffs);
     }
 
+    #[inline(always)]
     pub fn process(&mut self, input: f32) -> f32 {
         self.filter.run(input)
     }

@@ -23,7 +23,9 @@ use xsynth_core::{
     AudioPipe, AudioStreamParams, FunctionAudioPipe,
 };
 
-use crate::{RealtimeEventSender, RealtimeRenderMode, SynthEvent, ThreadCount, XSynthRealtimeConfig};
+use crate::{
+    RealtimeEventSender, RealtimeRenderMode, SynthEvent, ThreadCount, XSynthRealtimeConfig,
+};
 
 /// Holds the statistics for an instance of RealtimeSynth.
 #[derive(Debug, Clone)]
@@ -255,7 +257,11 @@ impl RealtimeSynth {
         total_voice_count: Arc<AtomicU64>,
         max_nps: Arc<AtomicU64>,
         perf: Arc<RenderPerfShared>,
-    ) -> (FunctionAudioPipe<Box<dyn FnMut(&mut [f32]) + Send>>, RealtimeEventSender, Vec<thread::JoinHandle<()>>) {
+    ) -> (
+        FunctionAudioPipe<Box<dyn FnMut(&mut [f32]) + Send>>,
+        RealtimeEventSender,
+        Vec<thread::JoinHandle<()>>,
+    ) {
         // Map the legacy `multithreading` option to ChannelGroup channel-level
         // parallelism. When `None`, use Auto so that channel rendering is still
         // parallelised via rayon without creating per-channel OS threads.
@@ -362,7 +368,11 @@ impl RealtimeSynth {
         channel_count: u32,
         total_voice_count: Arc<AtomicU64>,
         max_nps: Arc<AtomicU64>,
-    ) -> (FunctionAudioPipe<Box<dyn FnMut(&mut [f32]) + Send>>, RealtimeEventSender, Vec<thread::JoinHandle<()>>) {
+    ) -> (
+        FunctionAudioPipe<Box<dyn FnMut(&mut [f32]) + Send>>,
+        RealtimeEventSender,
+        Vec<thread::JoinHandle<()>>,
+    ) {
         let pool = match config.multithreading {
             ThreadCount::None => None,
             ThreadCount::Auto => Some(Arc::new(rayon::ThreadPoolBuilder::new().build().unwrap())),
@@ -415,8 +425,7 @@ impl RealtimeSynth {
         }
 
         if config.format == SynthFormat::Midi {
-            senders[9]
-                .send_config(9, ChannelConfigEvent::SetPercussionMode(true));
+            senders[9].send_config(9, ChannelConfigEvent::SetPercussionMode(true));
         }
 
         let mut vec_cache: VecDeque<Vec<f32>> = VecDeque::new();

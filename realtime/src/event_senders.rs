@@ -8,9 +8,7 @@ use std::{
 
 use crossbeam_channel::Sender;
 
-use xsynth_core::channel::{
-    ChannelAudioEvent, ChannelConfigEvent, ChannelEvent, ControlEvent,
-};
+use xsynth_core::channel::{ChannelAudioEvent, ChannelConfigEvent, ChannelEvent, ControlEvent};
 
 use crate::{RealtimeRenderMode, SynthEvent};
 
@@ -132,10 +130,8 @@ impl EventSender {
         {
             match &self.inner {
                 EventSenderInner::Threaded(sender) => {
-                    let _ = sender.send(ChannelEvent::Audio(ChannelAudioEvent::NoteOn {
-                        key,
-                        vel,
-                    }));
+                    let _ =
+                        sender.send(ChannelEvent::Audio(ChannelAudioEvent::NoteOn { key, vel }));
                 }
                 EventSenderInner::ChannelGroup(sender) => {
                     let _ = sender.send(SynthEvent::Channel(
@@ -156,9 +152,7 @@ impl EventSender {
         } else {
             match &self.inner {
                 EventSenderInner::Threaded(sender) => {
-                    let _ = sender.send(ChannelEvent::Audio(ChannelAudioEvent::NoteOff {
-                        key,
-                    }));
+                    let _ = sender.send(ChannelEvent::Audio(ChannelAudioEvent::NoteOff { key }));
                 }
                 EventSenderInner::ChannelGroup(sender) => {
                     let _ = sender.send(SynthEvent::Channel(
@@ -189,10 +183,7 @@ impl EventSender {
                     let _ = sender.send(ChannelEvent::Audio(event));
                 }
                 EventSenderInner::ChannelGroup(sender) => {
-                    let _ = sender.send(SynthEvent::Channel(
-                        channel,
-                        ChannelEvent::Audio(event),
-                    ));
+                    let _ = sender.send(SynthEvent::Channel(channel, ChannelEvent::Audio(event)));
                 }
             },
         }
@@ -243,9 +234,7 @@ impl Clone for EventSender {
     fn clone(&self) -> Self {
         EventSender {
             inner: match &self.inner {
-                EventSenderInner::Threaded(sender) => {
-                    EventSenderInner::Threaded(sender.clone())
-                }
+                EventSenderInner::Threaded(sender) => EventSenderInner::Threaded(sender.clone()),
                 EventSenderInner::ChannelGroup(sender) => {
                     EventSenderInner::ChannelGroup(sender.clone())
                 }
@@ -272,10 +261,7 @@ pub struct RealtimeEventSender {
 }
 
 impl RealtimeEventSender {
-    pub(super) fn new(
-        senders: Vec<EventSender>,
-        mode: RealtimeRenderMode,
-    ) -> RealtimeEventSender {
+    pub(super) fn new(senders: Vec<EventSender>, mode: RealtimeRenderMode) -> RealtimeEventSender {
         RealtimeEventSender { senders, mode }
     }
 

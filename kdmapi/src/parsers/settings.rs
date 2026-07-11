@@ -47,6 +47,7 @@ impl Settings {
             format: SynthFormat::Midi,
             multithreading: self.multithreading,
             ignore_range: self.ignore_range.clone(),
+            ..Default::default()
         }
     }
 }

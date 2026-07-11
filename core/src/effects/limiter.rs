@@ -4,6 +4,10 @@ struct SingleChannelLimiter {
     loudness: f32,
     attack: f32,
     falloff: f32,
+    /// Precomputed 1.0 / (falloff + 1.0) to replace division with multiplication
+    inv_falloff: f32,
+    /// Precomputed 1.0 / (attack + 1.0) to replace division with multiplication
+    inv_attack: f32,
     strength: f32,
     min_thresh: f32,
     max_output: f32,
@@ -11,10 +15,14 @@ struct SingleChannelLimiter {
 
 impl SingleChannelLimiter {
     fn new() -> SingleChannelLimiter {
+        let attack = 100.0;
+        let falloff = 16000.0;
         SingleChannelLimiter {
             loudness: 1.0,
-            attack: 100.0,
-            falloff: 16000.0,
+            attack,
+            falloff,
+            inv_falloff: 1.0 / (falloff + 1.0),
+            inv_attack: 1.0 / (attack + 1.0),
             strength: 1.0,
             min_thresh: 0.1,  // Lower threshold to allow more dynamic range
             max_output: 0.95, // Prevent hard clipping by limiting maximum output
@@ -27,10 +35,10 @@ impl SingleChannelLimiter {
         // Smooth envelope follower with different attack/release times
         if self.loudness > abs {
             // Release phase: slower decay
-            self.loudness = (self.loudness * self.falloff + abs) / (self.falloff + 1.0);
+            self.loudness = (self.loudness * self.falloff + abs) * self.inv_falloff;
         } else {
             // Attack phase: faster response
-            self.loudness = (self.loudness * self.attack + abs) / (self.attack + 1.0);
+            self.loudness = (self.loudness * self.attack + abs) * self.inv_attack;
         }
 
         // Ensure minimum threshold to prevent division by very small numbers
@@ -89,8 +97,14 @@ impl VolumeLimiter {
 
     /// Applies the limiting algorithm to the given sample buffer to prevent clipping.
     pub fn limit(&mut self, sample: &mut [f32]) {
-        for (i, s) in sample.iter_mut().enumerate() {
-            *s = self.channels[i % self.channel_count].limit(*s);
+        let cc = self.channel_count;
+        let mut ch = 0;
+        for s in sample.iter_mut() {
+            *s = self.channels[ch].limit(*s);
+            ch += 1;
+            if ch >= cc {
+                ch = 0;
+            }
         }
     }
 
@@ -104,9 +118,10 @@ impl VolumeLimiter {
             fn next(&mut self) -> Option<Self::Item> {
                 let next = self.samples.next();
                 if let Some(next) = next {
-                    let val =
-                        self.limiter.channels[self.pos % self.limiter.channel_count].limit(next);
+                    let cc = self.limiter.channel_count;
+                    let ch = self.pos % cc;
                     self.pos += 1;
+                    let val = self.limiter.channels[ch].limit(next);
                     Some(val)
                 } else {
                     None

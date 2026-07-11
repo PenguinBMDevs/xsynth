@@ -240,7 +240,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoop<Sampler> {
 
         let end = _mm256_set1_epi32(self.loop_end as i32);
         let start = _mm256_set1_epi32(self.loop_start as i32);
-        let loop_len = _mm256_set1_ps((self.loop_end - self.loop_start) as f32);
+        let inv_loop_len = _mm256_set1_ps(1.0 / (self.loop_end - self.loop_start) as f32);
 
         let cmp = _mm256_cmpgt_epi32(pos, end);
 
@@ -250,7 +250,7 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoop<Sampler> {
         } else {
             let a = _mm256_sub_epi32(_mm256_sub_epi32(pos, end), _mm256_set1_epi32(1));
             let a_f32 = _mm256_cvtepi32_ps(a);
-            let div = _mm256_div_ps(a_f32, loop_len);
+            let div = _mm256_mul_ps(a_f32, inv_loop_len);
             let div_i32 = _mm256_cvttps_epi32(div);
 
             let mul = _mm256_mullo_epi32(
@@ -390,14 +390,14 @@ impl<Sampler: BufferSampler> SampleReader for SampleReaderLoopSustain<Sampler> {
             if mask_cmp == 0 {
                 _mm256_i32gather_ps(self.buffer.ptr(), pos, 4)
             } else {
-                let loop_len_f32 =
-                    _mm256_set1_ps((self.loop_end.saturating_sub(self.loop_start)) as f32);
+                let ll = (self.loop_end.saturating_sub(self.loop_start)) as f32;
                 let loop_len_i32 =
                     _mm256_set1_epi32((self.loop_end.saturating_sub(self.loop_start)) as i32);
+                let inv_loop_len_f32 = _mm256_set1_ps(1.0 / ll);
 
                 let a = _mm256_sub_epi32(_mm256_sub_epi32(pos, end), _mm256_set1_epi32(1));
                 let a_f32 = _mm256_cvtepi32_ps(a);
-                let div = _mm256_div_ps(a_f32, loop_len_f32);
+                let div = _mm256_mul_ps(a_f32, inv_loop_len_f32);
                 let div_i32 = _mm256_cvttps_epi32(div);
 
                 let mul = _mm256_mullo_epi32(div_i32, loop_len_i32);
@@ -616,9 +616,11 @@ where
                         indexes = std::ptr::read(&idx as *const _ as *const S::Vi32);
                         fractionals = std::ptr::read(&frac as *const _ as *const S::Vf32);
 
-                        let mut x_arr = [0.0; 8];
-                        _mm256_storeu_ps(x_arr.as_mut_ptr(), x);
-                        self.time += x_arr[7] as f64;
+                        // Extract the last element (index 7) without spilling to memory:
+                        // upper 128-bit lane, then shuffle element [3] to [0]
+                        let hi128 = _mm256_extractf128_ps(x, 1);
+                        let last = _mm_cvtss_f32(_mm_shuffle_ps(hi128, hi128, 0xFF));
+                        self.time += last as f64;
                     }
 
                     let sample = self.grabber.get(indexes, fractionals);
@@ -757,9 +759,11 @@ where
                         indexes = std::ptr::read(&idx as *const _ as *const S::Vi32);
                         fractionals = std::ptr::read(&frac as *const _ as *const S::Vf32);
 
-                        let mut x_arr = [0.0; 8];
-                        _mm256_storeu_ps(x_arr.as_mut_ptr(), x);
-                        self.time += x_arr[7] as f64;
+                        // Extract the last element (index 7) without spilling to memory:
+                        // upper 128-bit lane, then shuffle element [3] to [0]
+                        let hi128 = _mm256_extractf128_ps(x, 1);
+                        let last = _mm_cvtss_f32(_mm_shuffle_ps(hi128, hi128, 0xFF));
+                        self.time += last as f64;
                     }
 
                     let left = self.grabber_left.get(indexes, fractionals);

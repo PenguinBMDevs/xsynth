@@ -305,12 +305,18 @@ impl VoiceChannel {
                 let control_data = &self.voice_control_data;
                 pool.install(|| {
                     key_voices.par_iter_mut().for_each(move |key| {
+                        let has_events = !key.event_cache.is_empty();
                         for e in key.event_cache.drain(..) {
                             key.data.send_event(e, control_data, &params.channel_sf);
                         }
 
-                        fast_zero_fill(&mut key.audio_cache, len);
-                        key.data.render_to(&mut key.audio_cache);
+                        // Skip silent keys (no events + no voices) to avoid
+                        // zero-filling 128 audio caches every render cycle.
+                        let has_voices = key.data.has_voices();
+                        if has_events || has_voices {
+                            fast_zero_fill(&mut key.audio_cache, len);
+                            key.data.render_to(&mut key.audio_cache);
+                        }
                     });
                 });
 

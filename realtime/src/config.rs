@@ -6,11 +6,7 @@ pub use xsynth_core::{
 
 /// Controls the rendering strategy used by the realtime synthesizer.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(default)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum RealtimeRenderMode {
     /// Render all channels synchronously inside the buffered render thread using
     /// `ChannelGroup`. This avoids the 16 per-channel OS threads and the blocking
